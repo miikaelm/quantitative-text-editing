@@ -1,2 +1,6 @@
 /venv
 *test_renders
+CLAUDE.md
+/data
+*__pycache__
+/tests
