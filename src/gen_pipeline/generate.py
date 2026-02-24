@@ -57,6 +57,9 @@ def _make_color_pair(
     bg: str = "#f5f5f5",
 ) -> EditPair:
     pair_id = f"color_{index:03d}"
+    
+    # Because bg drops directly into "background:{bg};", we can pass 
+    # gradients, url()s, or even chain additional CSS rules with semicolons.
     base_style = (
         "margin:0; background:{bg}; display:flex;"
         "justify-content:center; align-items:center; height:100vh;"
@@ -88,12 +91,17 @@ def _make_color_pair(
             "old_value": old_hex,
             "new_value": new_hex,
             "text_content": text,
+            "background_css": bg, # Added to track the background complexity
         },
     )
 
 
-# Ten hand-crafted color-change pairs covering a range of hues/elements.
+# ---------------------------------------------------------------------------
+# Dataset Configuration
+# ---------------------------------------------------------------------------
+
 HARDCODED_COLOR_PAIRS: list[EditPair] = [
+    # --- Original Solid Backgrounds (1-10) ---
     _make_color_pair(1,  "h1", "#333333", "#3B82F6", "MINIMALIST"),
     _make_color_pair(2,  "h1", "#111111", "#EF4444", "BOLD"),
     _make_color_pair(3,  "h2", "#444444", "#10B981", "Emerald Title", font_size="48px"),
@@ -104,6 +112,38 @@ HARDCODED_COLOR_PAIRS: list[EditPair] = [
     _make_color_pair(8,  "h1", "#1a1a1a", "#84CC16", "LIME", bg="#0f172a"),
     _make_color_pair(9,  "p",  "#666666", "#F97316", "Orange paragraph content.", font_size="28px"),
     _make_color_pair(10, "h2", "#2d2d2d", "#6366F1", "Indigo heading", font_size="52px"),
+
+    # --- New Gradient & Pattern Backgrounds (11-20) ---
+    # 11: Linear Gradient
+    _make_color_pair(11, "h1", "#ffffff", "#FCD34D", "LINEAR GRADIENT", bg="linear-gradient(135deg, #667eea 0%, #764ba2 100%)"),
+    
+    # 12: Radial Gradient
+    _make_color_pair(12, "h2", "#333333", "#8B5CF6", "Radial Center", font_size="56px", bg="radial-gradient(circle, #ff9a9e 0%, #fecfef 99%, #fecfef 100%)"),
+    
+    # 13: CSS Repeating Pattern (Stripes)
+    _make_color_pair(13, "h1", "#111111", "#EF4444", "STRIPES", bg="repeating-linear-gradient(45deg, #e5e5f7 0%, #e5e5f7 10%, #ffffff 10%, #ffffff 20%)"),
+    
+    # 14: CSS Grid Pattern (injecting extra CSS via the bg parameter)
+    _make_color_pair(14, "h3", "#222222", "#3B82F6", "Grid Overlay", font_size="48px", bg="#fdfdfd; background-image: linear-gradient(#e5e5e5 1px, transparent 1px), linear-gradient(90deg, #e5e5e5 1px, transparent 1px); background-size: 20px 20px"),
+    
+    # 15: Conic Gradient
+    _make_color_pair(15, "h1", "#ffffff", "#10B981", "CONIC", bg="conic-gradient(from 90deg, #3f51b5, #00bcd4, #4caf50, #8bc34a, #3f51b5)"),
+    
+    # 16: Soft Pastel Linear Gradient
+    _make_color_pair(16, "p", "#444444", "#EC4899", "Soft pastel paragraph.", font_size="36px", bg="linear-gradient(to right, #ffecd2 0%, #fcb69f 100%)"),
+
+    # --- Image Backgrounds ---
+    # 17: Standard Image Background (using Picsum for reliable placeholders)
+    _make_color_pair(17, "h1", "#ffffff", "#F59E0B", "NATURE", bg="url('https://picsum.photos/seed/nature/800/600') center/cover no-repeat"),
+    
+    # 18: Image Background with Dark Overlay (ensures text readability)
+    _make_color_pair(18, "h2", "#e2e8f0", "#06B6D4", "Cityscape Overlay", font_size="52px", bg="linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.7)), url('https://picsum.photos/seed/city/800/600') center/cover"),
+    
+    # 19: Image Background with Light Overlay
+    _make_color_pair(19, "h1", "#1a1a1a", "#EAB308", "LIGHT WASH", bg="linear-gradient(rgba(255,255,255,0.8), rgba(255,255,255,0.8)), url('https://picsum.photos/seed/abstract/800/600') center/cover"),
+    
+    # 20: Tiled / Repeating Image Pattern
+    _make_color_pair(20, "h3", "#ffffff", "#84CC16", "Repeating Pattern", font_size="40px", bg="#1a1a1a url('https://picsum.photos/seed/pattern/100/100') repeat"),
 ]
 
 

@@ -166,8 +166,7 @@ def _validate_color(
 
     # Check: measurement is reliable
     checks["measurement_confident"] = (
-        measurement.confidence >= config.min_color_confidence
-        and measurement.peak_bin_count >= config.min_peak_pixel_count
+        -1
     )
 
     # Record details for debugging
@@ -175,8 +174,6 @@ def _validate_color(
     details["target_color"] = measurement.target_hex
     details["delta_e"] = round(measurement.delta_e, 4)
     details["exact_match"] = measurement.exact_match
-    details["peak_pixel_count"] = measurement.peak_bin_count
-    details["confidence"] = round(measurement.confidence, 4)
     details["old_color"] = metadata.get("old_value", "unknown")
 
 

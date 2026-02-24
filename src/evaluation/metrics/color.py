@@ -1,31 +1,22 @@
 """
-color.py — Color change measurement via histogram differencing.
+color.py — Color change measurement via template matching and edge-based text segmentation.
 
 Method:
-    1. Extract ROI from source and output images (bbox or OCR-located).
-    2. Compute 3D RGB histograms (bin_width=2) for both ROIs.
-    3. Subtract: output_hist - source_hist.
-    4. Bin with largest positive increase → measured new text color.
-    5. ΔE (CIEDE2000) against target → accuracy score.
-
-The histogram diff cancels out background (same in both images),
-leaving the text color change as the dominant signal. Works with
-solid, gradient, or image backgrounds.
+    1. Extract text region from source image using bbox metadata.
+    2. Convert to edges (Canny) to get color-invariant template.
+    3. Template match against output image to find where text landed (handles small shifts).
+    4. In the matched region, use edge detection + flood fill to create text pixel mask.
+    5. Take mode RGB of masked text pixels → measured color.
+    6. ΔE (CIEDE2000) against target → accuracy score.
 """
 
 import numpy as np
 from numpy.typing import NDArray
 from dataclasses import dataclass
+from collections import Counter
+
+import cv2
 from skimage.color import rgb2lab, deltaE_ciede2000
-import matplotlib.pyplot as plt
-
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-DEFAULT_BIN_WIDTH = 2
-BINS_PER_CHANNEL = 256 // DEFAULT_BIN_WIDTH  # 128
 
 
 # ---------------------------------------------------------------------------
@@ -34,20 +25,20 @@ BINS_PER_CHANNEL = 256 // DEFAULT_BIN_WIDTH  # 128
 
 @dataclass
 class ColorMeasurement:
-    """Result of measuring a color change via histogram diff."""
-    measured_rgb: tuple[int, int, int]      # mode color from the dominant positive bin
-    target_rgb: tuple[int, int, int]        # expected color from metadata
-    delta_e: float                          # CIEDE2000 distance
-    exact_match: bool                       # measured == target (within bin width)
-    peak_bin_count: int                     # how many pixels in the dominant bin shift
-    confidence: float                       # peak relative to total positive shift
-    # Optional diagnostic info
+    """Result of measuring a color change via template matching + edge segmentation."""
+    measured_rgb: tuple[int, int, int]
+    target_rgb: tuple[int, int, int]
+    delta_e: float
+    exact_match: bool
+    text_pixel_count: int
+    template_match_score: float
+    match_offset: tuple[int, int]           # (dx, dy) shift from original bbox
     measured_hex: str
     target_hex: str
 
 
 # ---------------------------------------------------------------------------
-# Core functions
+# Utility functions
 # ---------------------------------------------------------------------------
 
 def hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
@@ -65,112 +56,132 @@ def rgb_to_hex(rgb: tuple[int, int, int]) -> str:
 
 def compute_delta_e(rgb1: tuple[int, int, int], rgb2: tuple[int, int, int]) -> float:
     """
-    Compute CIEDE2000 color difference between two RGB colors.
-    Returns a float where:
+    CIEDE2000 color difference.
         < 1.0  = imperceptible
         < 3.0  = barely noticeable
-        < 5.0  = noticeable
         > 5.0  = clearly different
     """
-    # skimage expects (1,1,3) shaped arrays in [0,1] range for rgb2lab
     lab1 = rgb2lab(np.array([[rgb1]], dtype=np.float64) / 255.0)
     lab2 = rgb2lab(np.array([[rgb2]], dtype=np.float64) / 255.0)
     return float(deltaE_ciede2000(lab1, lab2)[0, 0])
 
 
-def extract_roi_pixels(
-    image: NDArray,
-    bbox: tuple[int, int, int, int],
-) -> NDArray:
+def mode_rgb(pixels: NDArray) -> tuple[int, int, int]:
     """
-    Extract pixels from a bounding box region.
-
-    Args:
-        image: H×W×3 uint8 numpy array.
-        bbox: (x, y, w, h) in pixels.
-
-    Returns:
-        N×3 array of RGB pixel values.
+    Get the most common RGB value from an N×3 array.
     """
-    x, y, w, h = bbox
-    # Clamp to image bounds
-    img_h, img_w = image.shape[:2]
-    x0 = max(0, x)
-    y0 = max(0, y)
-    x1 = min(img_w, x + w)
-    y1 = min(img_h, y + h)
-
-    roi = image[y0:y1, x0:x1]
-    return roi.reshape(-1, 3)
-
-
-def compute_rgb_histogram(
-    pixels: NDArray,
-    bin_width: int = DEFAULT_BIN_WIDTH,
-) -> NDArray:
-    """
-    Compute a 3D RGB histogram with the given bin width.
-
-    Args:
-        pixels: N×3 uint8 array of RGB values.
-        bin_width: width of each bin (default 2).
-
-    Returns:
-        3D integer array of shape (n_bins, n_bins, n_bins).
-    """
-    n_bins = 256 // bin_width
-    bin_edges = np.arange(0, 257, bin_width, dtype=np.float64)
-
-    hist, _ = np.histogramdd(
-        pixels.astype(np.float64),
-        bins=[bin_edges, bin_edges, bin_edges],
-    )
-    return hist.astype(np.int64)
-
-
-def find_dominant_color_shift(
-    source_hist: NDArray,
-    output_hist: NDArray,
-    bin_width: int = DEFAULT_BIN_WIDTH,
-) -> tuple[tuple[int, int, int], int, float]:
-    """
-    Find the color that increased most between source and output.
-
-    Args:
-        source_hist: 3D histogram of source ROI.
-        output_hist: 3D histogram of output ROI.
-        bin_width: bin width used for histograms.
-
-    Returns:
-        (rgb, peak_count, confidence) where:
-            rgb: center of the bin with largest positive increase.
-            peak_count: number of pixels in that increase.
-            confidence: peak_count / total_positive_increase.
-    """
-    diff = output_hist - source_hist
-
-    # Only look at positive increases (new colors in output)
-    positive_diff = np.maximum(diff, 0)
-    total_positive = positive_diff.sum()
-
-    if total_positive == 0:
-        # No color change detected
-        return (0, 0, 0), 0, 0.0
-
-    # Find the bin with the largest increase
-    peak_idx = np.unravel_index(np.argmax(diff), diff.shape)
-    peak_count = int(diff[peak_idx])
-
-    # Convert bin index to RGB value (center of the bin)
-    rgb = tuple(int(idx * bin_width + bin_width // 2) for idx in peak_idx)
-
-    confidence = peak_count / total_positive if total_positive > 0 else 0.0
-
-    return rgb, peak_count, confidence
+    keys = (pixels[:, 0].astype(np.int64) * 65536
+            + pixels[:, 1].astype(np.int64) * 256
+            + pixels[:, 2].astype(np.int64))
+    counter = Counter(keys)
+    most_common = counter.most_common(1)[0][0]
+    r = (most_common >> 16) & 0xFF
+    g = (most_common >> 8) & 0xFF
+    b = most_common & 0xFF
+    return (r, g, b)
 
 
 # ---------------------------------------------------------------------------
-# High-level evaluation function
+# Template matching
+# ---------------------------------------------------------------------------
+
+def find_text_in_output(
+    source_img: NDArray,
+    output_img: NDArray,
+    bbox: tuple[int, int, int, int],
+    search_margin: int = 20,
+) -> tuple[tuple[int, int, int, int], float, tuple[int, int]]:
+    """
+    Locate the text region in the output image using edge-based template matching.
+
+    Args:
+        source_img: H×W×3 uint8 source image.
+        output_img: H×W×3 uint8 output image.
+        bbox: (x, y, w, h) original text bounding box.
+        search_margin: pixels to expand search area beyond original bbox.
+
+    Returns:
+        (matched_bbox, match_score, offset) where:
+            matched_bbox: (x, y, w, h) in output image.
+            match_score: normalized cross-correlation (0-1).
+            offset: (dx, dy) shift from original position.
+    """
+    x, y, w, h = bbox
+    img_h, img_w = source_img.shape[:2]
+
+    # Extract source template and convert to edges
+    source_gray = cv2.cvtColor(source_img, cv2.COLOR_RGB2GRAY)
+    template = source_gray[y:y+h, x:x+w]
+    template_edges = cv2.Canny(template, 50, 150)
+
+    # Define search region in output (original bbox + margin)
+    search_x0 = max(0, x - search_margin)
+    search_y0 = max(0, y - search_margin)
+    search_x1 = min(img_w, x + w + search_margin)
+    search_y1 = min(img_h, y + h + search_margin)
+
+    output_gray = cv2.cvtColor(output_img, cv2.COLOR_RGB2GRAY)
+    search_region = output_gray[search_y0:search_y1, search_x0:search_x1]
+    search_edges = cv2.Canny(search_region, 50, 150)
+
+    # Template match on edge maps
+    if (search_edges.shape[0] < template_edges.shape[0]
+            or search_edges.shape[1] < template_edges.shape[1]):
+        return bbox, 0.0, (0, 0)
+
+    result = cv2.matchTemplate(search_edges, template_edges, cv2.TM_CCOEFF_NORMED)
+    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+    # max_loc is (x, y) within search_region
+    matched_x = search_x0 + max_loc[0]
+    matched_y = search_y0 + max_loc[1]
+    offset = (matched_x - x, matched_y - y)
+
+    return (matched_x, matched_y, w, h), float(max_val), offset
+
+
+# ---------------------------------------------------------------------------
+# Text pixel segmentation
+# ---------------------------------------------------------------------------
+
+def segment_text_pixels(
+    image_region: NDArray,
+) -> NDArray:
+    """
+    Create a binary mask of text pixels using Otsu thresholding.
+
+    For a text ROI, there are two populations: text and background.
+    Otsu's method finds the optimal threshold to separate them.
+    We then determine which side is text by checking which population
+    is smaller (text occupies less area than background in a bbox).
+
+    Args:
+        image_region: H×W×3 uint8 ROI.
+
+    Returns:
+        H×W boolean mask where True = text pixel.
+    """
+    gray = cv2.cvtColor(image_region, cv2.COLOR_RGB2GRAY)
+
+    # Otsu threshold — automatically finds the best split between two populations
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+    # Text is the smaller population (less area than background in a bbox)
+    white_count = np.sum(binary == 255)
+    black_count = np.sum(binary == 0)
+
+    if black_count < white_count:
+        # Dark text on light background — text is the black pixels
+        mask = binary == 0
+    else:
+        # Light text on dark background — text is the white pixels
+        mask = binary == 255
+
+    return mask
+
+
+# ---------------------------------------------------------------------------
+# High-level evaluation
 # ---------------------------------------------------------------------------
 
 def evaluate_color_edit(
@@ -178,108 +189,70 @@ def evaluate_color_edit(
     output_image: NDArray,
     bbox: tuple[int, int, int, int],
     target_color_hex: str,
-    bin_width: int = DEFAULT_BIN_WIDTH,
+    search_margin: int = 20,
 ) -> ColorMeasurement:
     """
-    Evaluate a color edit by comparing histogram distributions.
-
-    Uses the ground truth source image to establish background distribution,
-    then finds the dominant new color in the output image's ROI.
+    Evaluate a color edit by finding text via template matching and reading its color.
 
     Args:
-        source_image: H×W×3 uint8 array (ground truth source / before edit).
-        output_image: H×W×3 uint8 array (model output or ground truth target).
-        bbox: (x, y, w, h) bounding box of the edited text element.
+        source_image: H×W×3 uint8 (ground truth source / before edit).
+        output_image: H×W×3 uint8 (model output or ground truth target).
+        bbox: (x, y, w, h) original bounding box of edited text.
         target_color_hex: expected new color as '#RRGGBB'.
-        bin_width: histogram bin width (default 2).
+        search_margin: pixels to search around original bbox for shifted text.
 
     Returns:
-        ColorMeasurement with measured color, target, ΔE, and diagnostics.
+        ColorMeasurement with measured color, ΔE, and diagnostics.
     """
     target_rgb = hex_to_rgb(target_color_hex)
 
-    # Extract ROI pixels
-    source_pixels = extract_roi_pixels(source_image, bbox)
-    output_pixels = extract_roi_pixels(output_image, bbox)
-
-    # Compute histograms
-    source_hist = compute_rgb_histogram(source_pixels, bin_width)
-    output_hist = compute_rgb_histogram(output_pixels, bin_width)
-
-    plot_top_color_differences(source_hist, output_hist)
-    # Find dominant color shift
-    measured_rgb, peak_count, confidence = find_dominant_color_shift(
-        source_hist, output_hist, bin_width
+    # Step 1: Find where the text is in the output image
+    matched_bbox, match_score, offset = find_text_in_output(
+        source_image, output_image, bbox, search_margin
     )
 
-    # Compute ΔE
-    de = compute_delta_e(measured_rgb, target_rgb)
+    # Step 2: Extract the matched region from output
+    mx, my, mw, mh = matched_bbox
+    img_h, img_w = output_image.shape[:2]
+    rx0 = max(0, mx)
+    ry0 = max(0, my)
+    rx1 = min(img_w, mx + mw)
+    ry1 = min(img_h, my + mh)
+    output_region = output_image[ry0:ry1, rx0:rx1]
 
-    # Exact match: within one bin width on each channel
-    exact = all(abs(m - t) <= bin_width for m, t in zip(measured_rgb, target_rgb))
+    # Step 3: Segment text pixels using edges
+    text_mask = segment_text_pixels(output_region)
+    text_pixel_count = int(text_mask.sum())
+
+    # Step 4: Extract color from text pixels
+    if text_pixel_count == 0:
+        return ColorMeasurement(
+            measured_rgb=(0, 0, 0),
+            target_rgb=target_rgb,
+            delta_e=100.0,
+            exact_match=False,
+            text_pixel_count=0,
+            template_match_score=match_score,
+            match_offset=offset,
+            measured_hex="#000000",
+            target_hex=target_color_hex.upper(),
+        )
+
+    text_pixels = output_region[text_mask]  # N×3
+    measured_rgb = mode_rgb(text_pixels)
+
+    # Step 5: Compute ΔE
+    de = compute_delta_e(measured_rgb, target_rgb)
+    exact = (measured_rgb == target_rgb)
 
     return ColorMeasurement(
         measured_rgb=measured_rgb,
         target_rgb=target_rgb,
         delta_e=de,
         exact_match=exact,
-        peak_bin_count=peak_count,
-        confidence=confidence,
+        text_pixel_count=text_pixel_count,
+        template_match_score=match_score,
+        match_offset=offset,
         measured_hex=rgb_to_hex(measured_rgb),
         target_hex=target_color_hex.upper(),
     )
-
-
-    
-
-def plot_top_color_differences(source_hist, output_hist, bin_width=2, top_n=10):
-    """
-    Plots a 1D bar chart of the top N added and removed colors.
-    Each bar is colored with the exact RGB color it represents.
-    """
-    diff_hist = output_hist - source_hist
-    flat_diff = diff_hist.flatten()
-    
-    # Find indices of the largest positive (added) and negative (removed) changes
-    pos_indices = np.argsort(flat_diff)[-top_n:][::-1]
-    neg_indices = np.argsort(flat_diff)[:top_n]
-    
-    # Filter out zeros (in case there are fewer than top_n changes)
-    pos_indices = [idx for idx in pos_indices if flat_diff[idx] > 0]
-    neg_indices = [idx for idx in neg_indices if flat_diff[idx] < 0]
-    
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-    
-    def plot_bars(ax, indices, title, is_positive):
-        if not indices:
-            ax.set_title(title + " (No changes)")
-            return
-            
-        counts = flat_diff[indices]
-        if not is_positive:
-            counts = np.abs(counts) # Show magnitudes for removed colors
-            
-        # Convert 1D flat indices back to 3D coordinates
-        coords = np.unravel_index(indices, diff_hist.shape)
-        
-        rgbs, labels = [], []
-        for i in range(len(indices)):
-            r = coords[0][i] * bin_width + bin_width // 2
-            g = coords[1][i] * bin_width + bin_width // 2
-            b = coords[2][i] * bin_width + bin_width // 2
-            rgbs.append((r/255., g/255., b/255.))
-            labels.append(f"#{r:02X}{g:02X}{b:02X}")
-            
-        # Plot the bars and apply the actual colors!
-        ax.bar(range(len(indices)), counts, color=rgbs, edgecolor='black')
-        ax.set_xticks(range(len(indices)))
-        ax.set_xticklabels(labels, rotation=45, ha='right')
-        ax.set_title(title)
-        ax.set_ylabel("Pixel Count Difference")
-        ax.grid(axis='y', linestyle='--', alpha=0.7)
-        
-    plot_bars(ax1, pos_indices, "Added Colors (New Text Color)", is_positive=True)
-    plot_bars(ax2, neg_indices, "Removed Colors (Old Text Color)", is_positive=False)
-    
-    plt.tight_layout()
-    plt.show()
