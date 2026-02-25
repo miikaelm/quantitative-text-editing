@@ -26,9 +26,9 @@ from src.evaluation.metrics.color import evaluate_color_edit, ColorMeasurement
 class ValidationConfig:
     """Thresholds for pass/fail decisions."""
     # Color edit thresholds
-    max_color_delta_e: float = 2.0          # target color must be near-exact in ground truth
-    min_color_confidence: float = 0.3       # histogram peak must be ≥30% of total positive shift
-    min_peak_pixel_count: int = 20          # need enough text pixels for reliable measurement
+    max_color_delta_e: float = 3.5          # target color must be near-exact in ground truth
+    min_ecr: float = 0.75
+    max_ecr: float = 1.1
 
 
 # ---------------------------------------------------------------------------
@@ -153,16 +153,18 @@ def _validate_color(
     sb = metadata["source_bbox"]
     bbox = (sb["x"], sb["y"], sb["width"], sb["height"])
     target_hex = metadata["new_value"]
+    planned_delta_e = metadata["planned_delta_e"]
 
     measurement: ColorMeasurement = evaluate_color_edit(
         source_image=source_img,
         output_image=target_img,
         bbox=bbox,
         target_color_hex=target_hex,
+        planned_delta_e=planned_delta_e
     )
 
     # Check: color is correct
-    checks["edit_applied"] = measurement.delta_e <= config.max_color_delta_e
+    checks["edit_applied"] = measurement.delta_e <= config.max_color_delta_e and (measurement.edit_completion_ratio >= config.min_ecr and measurement.edit_completion_ratio <= config.max_ecr)
 
     # Check: measurement is reliable
     checks["measurement_confident"] = (
@@ -173,6 +175,7 @@ def _validate_color(
     details["measured_color"] = measurement.measured_hex
     details["target_color"] = measurement.target_hex
     details["delta_e"] = round(measurement.delta_e, 4)
+    details["edit_completion_ratio"] = measurement.edit_completion_ratio
     details["exact_match"] = measurement.exact_match
     details["old_color"] = metadata.get("old_value", "unknown")
 

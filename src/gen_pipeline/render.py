@@ -7,6 +7,7 @@ Produces deterministic, pixel-perfect renders at a fixed resolution.
 import asyncio
 from pathlib import Path
 from dataclasses import dataclass, field
+from PIL import Image
 from playwright.async_api import async_playwright, Browser
 
 
@@ -14,8 +15,11 @@ from playwright.async_api import async_playwright, Browser
 class RenderConfig:
     """Configuration for deterministic rendering."""
     width: int = 1024
-    height: int = 768
+    height: int = 1024
     device_scale_factor: float = 1.0  # keep at 1 to avoid DPI scaling artifacts
+    # Downscale rendered images to this size (e.g. 512 for 512x512 training).
+    # None means no downscaling.
+    downscale_to: int | None = 512
     # Disable animations/transitions for determinism
     disable_animations: bool = True
     # Optional: force a specific font to avoid system font differences
@@ -92,6 +96,17 @@ class Renderer:
 
         return page, context, errors
 
+    def _downscale(self, image_path: Path) -> None:
+        """Downscale an image in-place using Lanczos resampling."""
+        size = self.config.downscale_to
+        if size is None:
+            return
+        img = Image.open(image_path)
+        if img.size == (size, size):
+            return
+        img = img.resize((size, size), Image.LANCZOS)
+        img.save(image_path)
+
     async def render_html_string(
         self, html: str, output_path: Path, full_page: bool = False
     ) -> RenderResult:
@@ -107,10 +122,14 @@ class Renderer:
                 full_page=full_page,
                 type="png",
             )
+
+            self._downscale(output_path)
+
+            final_size = self.config.downscale_to or self.config.width
             return RenderResult(
                 image_path=output_path,
-                width=self.config.width,
-                height=self.config.height,
+                width=final_size,
+                height=final_size,
                 errors=errors,
             )
         finally:
@@ -186,7 +205,7 @@ if __name__ == "__main__":
     src_result, tgt_result = render_pair_sync(
         source, target, output_dir="./test_renders", pair_id="color_test_001"
     )
-    print(f"Source: {src_result.image_path}")
-    print(f"Target: {tgt_result.image_path}")
+    print(f"Source: {src_result.image_path} ({src_result.width}x{src_result.height})")
+    print(f"Target: {tgt_result.image_path} ({tgt_result.width}x{tgt_result.height})")
     if src_result.errors or tgt_result.errors:
         print(f"Errors: {src_result.errors + tgt_result.errors}")

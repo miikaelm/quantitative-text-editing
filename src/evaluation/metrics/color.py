@@ -35,6 +35,8 @@ class ColorMeasurement:
     match_offset: tuple[int, int]           # (dx, dy) shift from original bbox
     measured_hex: str
     target_hex: str
+    edit_completion_ratio: float | None  # None if planned_delta_e not provided
+    planned_delta_e: float | None
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +192,7 @@ def evaluate_color_edit(
     bbox: tuple[int, int, int, int],
     target_color_hex: str,
     search_margin: int = 20,
+    planned_delta_e: float | None = None,
 ) -> ColorMeasurement:
     """
     Evaluate a color edit by finding text via template matching and reading its color.
@@ -245,6 +248,8 @@ def evaluate_color_edit(
     de = compute_delta_e(measured_rgb, target_rgb)
     exact = (measured_rgb == target_rgb)
 
+    ecr = _compute_ecr(de, planned_delta_e)
+
     return ColorMeasurement(
         measured_rgb=measured_rgb,
         target_rgb=target_rgb,
@@ -255,4 +260,28 @@ def evaluate_color_edit(
         match_offset=offset,
         measured_hex=rgb_to_hex(measured_rgb),
         target_hex=target_color_hex.upper(),
+        edit_completion_ratio=ecr,
+        planned_delta_e=planned_delta_e,
     )
+
+def _compute_ecr(
+    delta_e_measured_target: float,
+    planned_delta_e: float | None,
+    floor: float = 1.0,
+) -> float | None:
+    """
+    Edit Completion Ratio.
+
+        ECR = 1 - (ΔE(measured, target) / ΔE(original, target))
+
+        1.0  = perfect edit
+        0.0  = model did nothing (output ≈ original)
+        <0   = moved in wrong direction
+        >1   = overshot
+
+    Returns None if planned_delta_e is unavailable or below floor
+    (near-identity edits where the ratio is unstable).
+    """
+    if planned_delta_e is None or planned_delta_e < floor:
+        return None
+    return round(1.0 - (delta_e_measured_target / planned_delta_e), 4)
