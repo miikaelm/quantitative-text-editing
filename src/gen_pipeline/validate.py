@@ -41,6 +41,7 @@ class ValidationResult:
     passed: bool
     checks: dict[str, bool]
     details: dict[str, float | str]
+    metadata: dict
 
     @property
     def failure_reasons(self) -> list[str]:
@@ -93,6 +94,7 @@ def validate_pair(
             passed=False,
             checks={"images_exist": False},
             details={"error": "missing image files"},
+            metadata=metadata
         )
     checks["images_exist"] = True
 
@@ -123,6 +125,7 @@ def validate_pair(
         passed=passed,
         checks=checks,
         details=details,
+        metadata=metadata
     )
 
 
