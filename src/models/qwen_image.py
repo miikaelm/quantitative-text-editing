@@ -17,9 +17,9 @@ class QwenImageModel(BaseModel):
     """Qwen-Image-Edit-2511 via DiffSynth."""
 
     # Default generation params — can be overridden per-call via kwargs
-    DEFAULT_STEPS = 40
-    DEFAULT_HEIGHT = 1024
-    DEFAULT_WIDTH = 1024
+    DEFAULT_STEPS = 25
+    DEFAULT_HEIGHT = 512
+    DEFAULT_WIDTH = 512
 
     def __init__(
         self,
@@ -32,17 +32,7 @@ class QwenImageModel(BaseModel):
         self.pipe = None
 
     def load(self) -> None:
-        # Point every cache env var at our persistent dir *before* any
-        # modelscope / huggingface code resolves paths.
-        cache = str(self.model_dir)
-        for var in [
-            "MODELSCOPE_CACHE",
-            "MS_CACHE_HOME",
-            "HF_HOME",
-            "HUGGINGFACE_HUB_CACHE",
-            "HF_HUB_CACHE",
-        ]:
-            os.environ[var] = cache
+        os.environ["DIFFSYNTH_MODEL_BASE_PATH"] = str(self.model_dir)
 
         from diffsynth.pipelines.qwen_image import QwenImagePipeline, ModelConfig
 
