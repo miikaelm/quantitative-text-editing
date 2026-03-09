@@ -17,6 +17,7 @@ import numpy as np
 from PIL import Image
 
 from evaluation.metrics.color import evaluate_color_edit, ColorMeasurement
+from evaluation.metrics.reposition import evaluate_reposition_edit, bbox_centroid
 
 
 # ---------------------------------------------------------------------------
@@ -175,15 +176,64 @@ def _validate_color(
     details["old_color"] = metadata.get("old_value", "unknown")
 
 
+def _validate_reposition(
+    source_img: np.ndarray,
+    target_img: np.ndarray,
+    metadata: dict,
+    config: ValidationConfig,
+    checks: dict,
+    details: dict,
+) -> None:
+    """
+    Validate a reposition edit by checking that the rendered target image
+    has text in the correct zone for the end_position.
+
+    Uses the OCR bboxes stored in metadata by generate.py, so no OCR is
+    re-run here.
+    """
+    if "target_bbox" not in metadata:
+        checks["bbox_available"] = False
+        details["error"] = "target_bbox missing (OCR failed during generation)"
+        return
+    checks["bbox_available"] = True
+
+    tb = metadata["target_bbox"]
+    end_position = metadata["new_value"]   # old_value = start, new_value = end
+    img_h, img_w = target_img.shape[:2]
+
+    measurement = evaluate_reposition_edit(
+        bbox=tb,
+        target_position=end_position,
+        img_width=img_w,
+        img_height=img_h,
+    )
+
+    checks["text_in_correct_zone"] = measurement.in_correct_zone
+
+    # Verify text actually moved (sanity check using source_bbox if available)
+    if "source_bbox" in metadata:
+        sb = metadata["source_bbox"]
+        src_cx, src_cy = bbox_centroid(sb)
+        tgt_cx, tgt_cy = measurement.centroid
+        pixels_moved = ((tgt_cx - src_cx) ** 2 + (tgt_cy - src_cy) ** 2) ** 0.5
+        checks["text_moved"] = pixels_moved > 20   # at least 20px displacement
+        details["pixels_moved"] = round(pixels_moved, 1)
+
+    details["target_position"] = end_position
+    details["measured_centroid"] = measurement.centroid
+    details["zone_center"] = measurement.zone_center
+    details["pixel_distance_to_zone_center"] = measurement.pixel_distance
+
+
 # ---------------------------------------------------------------------------
 # Dispatch table — add new edit type validators here
 # ---------------------------------------------------------------------------
 
 _VALIDATORS = {
-    "color": _validate_color,
-    # "reposition": _validate_reposition,
-    # "scaling":    _validate_scaling,
-    # "content":    _validate_content,
+    "color":      _validate_color,
+    "reposition": _validate_reposition,
+    # "scaling":  _validate_scaling,
+    # "content":  _validate_content,
 }
 
 

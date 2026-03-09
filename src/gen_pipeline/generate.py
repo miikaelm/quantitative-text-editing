@@ -24,6 +24,8 @@ from gen_pipeline.render import Renderer, RenderConfig
 from gen_pipeline.build_pairs import EditPair, build_pairs
 from gen_pipeline.specs.color import generate_color_specs
 from gen_pipeline.templates.color import build_color_html
+from gen_pipeline.specs.reposition import generate_reposition_specs
+from gen_pipeline.templates.reposition import build_reposition_html
 from utils.ocr import find_text_bbox
 
 
@@ -127,8 +129,16 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
     )
 
-    specs = generate_color_specs()
-    pairs = build_pairs(specs, build_color_html)
+    if args.edit_type == "color":
+        specs = generate_color_specs()
+        pairs = build_pairs(specs, build_color_html)
+    elif args.edit_type == "reposition":
+        specs = generate_reposition_specs()
+        pairs = build_pairs(specs, build_reposition_html)
+    else:
+        print(f"Unknown edit type: {args.edit_type!r}. Supported: color, reposition")
+        sys.exit(1)
+
     print(f"Generating {len(pairs)} {args.edit_type} pairs → {args.output_dir}")
     jsonl_path = generate_pairs_sync(pairs, config)
     print(f"\nDone. JSONL written to: {jsonl_path}")

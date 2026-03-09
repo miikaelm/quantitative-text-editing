@@ -38,6 +38,8 @@ from PIL import Image
 
 from evaluation.metrics.color import evaluate_color_edit, ColorMeasurement
 from evaluation.metrics.preservation import check_unintended_modifications
+from evaluation.metrics.reposition import evaluate_reposition_edit, bbox_centroid, RepositionMeasurement
+from utils.ocr import find_text_bbox
 
 log = logging.getLogger(__name__)
 
@@ -266,11 +268,84 @@ def _evaluate_reposition(
     metadata: dict,
     config: EvalConfig,
 ) -> PairResult:
-    """Evaluate a reposition edit. TODO: implement with IoU / centroid distance."""
+    """
+    Evaluate a reposition edit.
+
+    Uses OCR (via metadata["_output_image_path"], injected by evaluate_entry)
+    to locate the text in the model output, then checks whether it falls in
+    the expected zone for the target position.  Falls back to a zone check on
+    the ground-truth target_bbox if OCR fails or no path is available.
+    """
+    checks: dict[str, bool] = {}
+    scores: dict[str, float | str] = {}
+    details: dict[str, Any] = {}
+
+    end_position = metadata.get("new_value")
+    if not end_position:
+        return PairResult(
+            pair_id="", edit_type="reposition", grade="skip",
+            scores={}, checks={},
+            details={"error": "new_value (end_position) missing from metadata"},
+        )
+
+    text_content = metadata.get("text_content")
+    img_h, img_w = output_img.shape[:2]
+
+    # Try OCR on the output image to find where text actually ended up
+    output_bbox: dict | None = None
+    output_path = metadata.get("_output_image_path")
+    if output_path and text_content:
+        output_bbox = find_text_bbox(output_path, text_content)
+
+    if output_bbox is None:
+        # OCR failed — skip grading but record why
+        checks["ocr_found"] = False
+        details["note"] = "OCR could not locate text in output image; reposition grade skipped"
+        return PairResult(
+            pair_id="", edit_type="reposition", grade="skip",
+            scores=scores, checks=checks, details=details,
+        )
+    checks["ocr_found"] = True
+
+    measurement: RepositionMeasurement = evaluate_reposition_edit(
+        bbox=output_bbox,
+        target_position=end_position,
+        img_width=img_w,
+        img_height=img_h,
+    )
+
+    checks["text_in_correct_zone"] = measurement.in_correct_zone
+
+    # If ground-truth target bbox is available, compute pixel distance to it
+    if "target_bbox" in metadata:
+        tb = metadata["target_bbox"]
+        gt_cx, gt_cy = bbox_centroid(tb)
+        out_cx, out_cy = measurement.centroid
+        px_dist = ((out_cx - gt_cx) ** 2 + (out_cy - gt_cy) ** 2) ** 0.5
+        scores["pixel_distance_to_gt"] = round(px_dist, 2)
+        grade = _grade(
+            px_dist,
+            excellent=config.reposition_px_excellent,
+            good=config.reposition_px_good,
+            poor=config.reposition_px_poor,
+        )
+    else:
+        # No ground truth bbox — grade on zone membership only
+        grade = "excellent" if measurement.in_correct_zone else "fail"
+
+    scores["pixel_distance_to_zone_center"] = measurement.pixel_distance
+    details["target_position"] = end_position
+    details["output_centroid"] = measurement.centroid
+    details["zone_center"] = measurement.zone_center
+
+    if not measurement.in_correct_zone and grade not in ("fail",):
+        grade = "poor"
+
+    checks["position_acceptable"] = grade != "fail"
+
     return PairResult(
-        pair_id="", edit_type="reposition", grade="skip",
-        scores={}, checks={},
-        details={"note": "reposition evaluation not yet implemented"},
+        pair_id="", edit_type="reposition",
+        grade=grade, scores=scores, checks=checks, details=details,
     )
 
 
@@ -350,7 +425,14 @@ def evaluate_entry(
             details={"error": f"unknown edit_type: {edit_type}"},
         )
 
-    result = evaluator(source_img, output_img, metadata, config)
+    # Inject image paths so evaluators that need OCR can access them
+    eval_metadata = {
+        **metadata,
+        "_output_image_path": entry.get("output_image"),
+        "_source_image_path": entry.get("source_image"),
+    }
+
+    result = evaluator(source_img, output_img, eval_metadata, config)
     result.pair_id = pair_id
     result.elapsed_seconds = entry.get("elapsed_seconds")
 
