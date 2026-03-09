@@ -29,7 +29,7 @@ import argparse
 import json
 import logging
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +37,7 @@ import numpy as np
 from PIL import Image
 
 from evaluation.metrics.color import evaluate_color_edit, ColorMeasurement
+from evaluation.metrics.preservation import check_unintended_modifications
 
 log = logging.getLogger(__name__)
 
@@ -223,7 +224,8 @@ def _evaluate_color(
 
     # Scores
     scores["delta_e"] = round(measurement.delta_e, 4)
-    scores["edit_completion_ratio"] = round(measurement.edit_completion_ratio, 4)
+    if(measurement.edit_completion_ratio):
+        scores["edit_completion_ratio"] = round(measurement.edit_completion_ratio, 4)
 
     # Details
     details["measured_color"] = measurement.measured_hex
@@ -240,10 +242,11 @@ def _evaluate_color(
     )
 
     # Also check ECR bounds — downgrade if out of range
-    ecr_ok = config.color_ecr_min <= measurement.edit_completion_ratio <= config.color_ecr_max
-    checks["ecr_in_range"] = ecr_ok
-    if not ecr_ok and grade != "fail":
-        grade = "poor"
+    if measurement.edit_completion_ratio:
+        ecr_ok = config.color_ecr_min <= measurement.edit_completion_ratio <= config.color_ecr_max
+        checks["ecr_in_range"] = ecr_ok
+        if not ecr_ok and grade != "fail":
+            grade = "poor"
 
     checks["color_acceptable"] = grade != "fail"
 
@@ -308,70 +311,6 @@ _EVALUATORS = {
 
 
 # ---------------------------------------------------------------------------
-# Unintended modification detection (edit-type-agnostic)
-# ---------------------------------------------------------------------------
-
-def _check_unintended_modifications(
-    source_img: np.ndarray,
-    output_img: np.ndarray,
-    metadata: dict,
-) -> dict[str, Any]:
-    """
-    Check whether the model altered regions outside the edit bounding box.
-
-    Returns a dict of metrics:
-        - outside_mse: mean squared error of pixels outside the bbox
-        - outside_psnr: PSNR of the non-edited region
-        - outside_changed_ratio: fraction of outside pixels that changed
-    """
-    result: dict[str, Any] = {}
-
-    bbox_key = "source_bbox"
-    if bbox_key not in metadata:
-        result["note"] = "no bbox available for unintended modification check"
-        return result
-
-    sb = metadata[bbox_key]
-    x, y, w, h = sb["x"], sb["y"], sb["width"], sb["height"]
-
-    # Create mask: True = outside edit region
-    mask = np.ones(source_img.shape[:2], dtype=bool)
-    y_end = min(y + h, source_img.shape[0])
-    x_end = min(x + w, source_img.shape[1])
-    mask[y:y_end, x:x_end] = False
-
-    # Handle shape mismatch (model may output different resolution)
-    if source_img.shape != output_img.shape:
-        result["shape_mismatch"] = True
-        result["source_shape"] = list(source_img.shape)
-        result["output_shape"] = list(output_img.shape)
-        return result
-
-    outside_source = source_img[mask].astype(np.float64)
-    outside_output = output_img[mask].astype(np.float64)
-
-    if outside_source.size == 0:
-        result["note"] = "bbox covers entire image"
-        return result
-
-    diff = outside_source - outside_output
-    mse = float(np.mean(diff ** 2))
-    result["outside_mse"] = round(mse, 4)
-
-    if mse > 0:
-        result["outside_psnr"] = round(10 * np.log10(255.0 ** 2 / mse), 2)
-    else:
-        result["outside_psnr"] = float("inf")
-
-    # Fraction of pixels that changed at all (with small tolerance for JPEG artefacts)
-    pixel_diff = np.abs(diff).max(axis=-1) if diff.ndim > 1 else np.abs(diff)
-    changed = pixel_diff > 5  # tolerance for compression noise
-    result["outside_changed_ratio"] = round(float(changed.mean()), 6)
-
-    return result
-
-
-# ---------------------------------------------------------------------------
 # Single entry evaluation
 # ---------------------------------------------------------------------------
 
@@ -433,7 +372,7 @@ def evaluate_entry(
 
     # Unintended modification check
     if check_unintended:
-        unintended = _check_unintended_modifications(source_img, output_img, metadata)
+        unintended = check_unintended_modifications(source_img, output_img, metadata)
         result.details["unintended_modifications"] = unintended
 
     return result
@@ -457,12 +396,12 @@ def evaluate_manifest(
         aggregate: AggregateResult with summary statistics
     """
     config = config or EvalConfig()
-    manifest_path = Path(manifest_path)
+    _manifest_path = Path(manifest_path)
 
     if data_root is None:
-        data_root = manifest_path.parent
+        data_root = _manifest_path.parent
 
-    with open(manifest_path) as f:
+    with open(_manifest_path) as f:
         entries = [json.loads(line) for line in f if line.strip()]
 
     results: list[PairResult] = []
@@ -579,7 +518,7 @@ def _print_results(results: list[PairResult], aggregate: AggregateResult) -> Non
         print(f"  {gc}{grade:<10}{RESET} {count:>4}  ({pct:5.1f}%)  {bar}")
 
     if summary["by_edit_type"]:
-        print(f"\nBy edit type:")
+        print("\nBy edit type:")
         for et, grades in summary["by_edit_type"].items():
             et_total = sum(grades.values())
             et_pass = grades["excellent"] + grades["good"] + grades["poor"]
@@ -587,7 +526,7 @@ def _print_results(results: list[PairResult], aggregate: AggregateResult) -> Non
                   f"(E={grades['excellent']} G={grades['good']} P={grades['poor']} F={grades['fail']})")
 
     if summary["score_statistics"]:
-        print(f"\nScore statistics:")
+        print("\nScore statistics:")
         for metric, stats in summary["score_statistics"].items():
             print(f"  {metric:<24} mean={stats['mean']:.4f}  "
                   f"median={stats['median']:.4f}  std={stats['std']:.4f}  "

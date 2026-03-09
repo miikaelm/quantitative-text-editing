@@ -8,6 +8,7 @@ Currently implements: color edit validation.
 TODO: reposition, scaling, content edit validation.
 """
 
+import argparse
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +16,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from src.evaluation.metrics.color import evaluate_color_edit, ColorMeasurement
+from evaluation.metrics.color import evaluate_color_edit, ColorMeasurement
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +95,7 @@ def validate_pair(
             passed=False,
             checks={"images_exist": False},
             details={"error": "missing image files"},
-            metadata=metadata
+            metadata=pair["metadata"]
         )
     checks["images_exist"] = True
 
@@ -104,20 +105,11 @@ def validate_pair(
     edit_type = pair["edit_type"]
     metadata = pair["metadata"]
 
-    if edit_type == "color":
-        _validate_color(source_img, target_img, metadata, config, checks, details)
-
-    elif edit_type == "reposition":
-        # TODO
-        details["note"] = "reposition validation not yet implemented"
-
-    elif edit_type == "scaling":
-        # TODO
-        details["note"] = "scaling validation not yet implemented"
-
-    elif edit_type == "content":
-        # TODO
-        details["note"] = "content validation not yet implemented"
+    validator = _VALIDATORS.get(edit_type)
+    if validator is not None:
+        validator(source_img, target_img, metadata, config, checks, details)
+    else:
+        details["note"] = f"{edit_type} validation not yet implemented"
 
     passed = all(checks.values())
     return ValidationResult(
@@ -184,6 +176,18 @@ def _validate_color(
 
 
 # ---------------------------------------------------------------------------
+# Dispatch table — add new edit type validators here
+# ---------------------------------------------------------------------------
+
+_VALIDATORS = {
+    "color": _validate_color,
+    # "reposition": _validate_reposition,
+    # "scaling":    _validate_scaling,
+    # "content":    _validate_content,
+}
+
+
+# ---------------------------------------------------------------------------
 # Dataset-level validation
 # ---------------------------------------------------------------------------
 
@@ -196,7 +200,7 @@ def validate_dataset(
     Validate all pairs in a JSONL file.
     Returns (valid_pairs, invalid_pairs, all_results).
     """
-    image_dir = Path(image_dir)
+    _image_dir = Path(image_dir)
     config = config or ValidationConfig()
     valid, invalid = [], []
     results = []
@@ -205,7 +209,7 @@ def validate_dataset(
         pairs = [json.loads(line) for line in f]
 
     for pair in pairs:
-        result = validate_pair(pair, image_dir, config)
+        result = validate_pair(pair, _image_dir, config)
         results.append(result)
         if result.passed:
             valid.append(pair)
@@ -216,3 +220,44 @@ def validate_dataset(
     print(f"\nValidation: {len(valid)}/{len(pairs)} passed "
           f"({len(invalid)} rejected)")
     return valid, invalid, results
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Validate generated edit pairs.")
+    parser.add_argument(
+        "--jsonl", type=Path, required=True,
+        help="Path to pairs.jsonl produced by generate.py",
+    )
+    parser.add_argument(
+        "--image-dir", type=Path, required=True,
+        help="Directory containing the rendered images (pairs.jsonl's images/ folder)",
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, default=None,
+        help="Directory to write pairs_valid.jsonl and pairs_invalid.jsonl "
+             "(defaults to the same directory as --jsonl)",
+    )
+    args = parser.parse_args()
+
+    out_dir = args.output_dir or args.jsonl.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    valid, invalid, _ = validate_dataset(str(args.jsonl), str(args.image_dir))
+
+    valid_path = out_dir / "pairs_valid.jsonl"
+    invalid_path = out_dir / "pairs_invalid.jsonl"
+
+    with open(valid_path, "w", encoding="utf-8") as f:
+        for pair in valid:
+            f.write(json.dumps(pair) + "\n")
+
+    with open(invalid_path, "w", encoding="utf-8") as f:
+        for pair in invalid:
+            f.write(json.dumps(pair) + "\n")
+
+    print(f"Valid   → {valid_path}")
+    print(f"Invalid → {invalid_path}")
