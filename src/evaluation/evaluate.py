@@ -65,6 +65,14 @@ class EvalConfig:
     reposition_px_good: float = 10.0
     reposition_px_poor: float = 25.0
 
+    # Reposition ECR adjustments (applied when ECR is available):
+    #   - ECR < ecr_poor AND pixel grade is "poor" → downgrade to "fail"
+    #     (element didn't actually move enough; closeness was coincidental)
+    #   - ECR >= ecr_good AND pixel grade is "fail" → upgrade to "good"
+    #   - ECR >= ecr_poor AND pixel grade is "fail" → upgrade to "poor"
+    reposition_ecr_good: float = 0.9
+    reposition_ecr_poor: float = 0.5
+
     # Scaling thresholds (ratio error)
     scaling_ratio_excellent: float = 0.05   # within 5%
     scaling_ratio_good: float = 0.15
@@ -226,7 +234,7 @@ def _evaluate_color(
 
     # Scores
     scores["delta_e"] = round(measurement.delta_e, 4)
-    if(measurement.edit_completion_ratio):
+    if measurement.edit_completion_ratio is not None:
         scores["edit_completion_ratio"] = round(measurement.edit_completion_ratio, 4)
 
     # Details
@@ -244,7 +252,7 @@ def _evaluate_color(
     )
 
     # Also check ECR bounds — downgrade if out of range
-    if measurement.edit_completion_ratio:
+    if measurement.edit_completion_ratio is not None:
         ecr_ok = config.color_ecr_min <= measurement.edit_completion_ratio <= config.color_ecr_max
         checks["ecr_in_range"] = ecr_ok
         if not ecr_ok and grade != "fail":
@@ -323,6 +331,20 @@ def _evaluate_reposition(
         good=config.reposition_px_good,
         poor=config.reposition_px_poor,
     )
+
+    # ECR-based grade adjustments (when available):
+    #   - pixel grade "fail" but ECR is high → element moved most of the way
+    #   - pixel grade "poor"/"good" but ECR is low → coincidental proximity, not a real edit
+    if measurement.ecr is not None:
+        ecr = measurement.ecr
+        checks["ecr_sufficient"] = ecr >= config.reposition_ecr_poor
+        if grade == "fail":
+            if ecr >= config.reposition_ecr_good:
+                grade = "good"
+            elif ecr >= config.reposition_ecr_poor:
+                grade = "poor"
+        elif grade in ("poor", "good") and ecr < config.reposition_ecr_poor:
+            grade = "fail"
 
     details["measured_centroid"] = measurement.measured_centroid
     details["target_centroid"] = measurement.target_centroid
@@ -545,28 +567,46 @@ def _print_results(results: list[PairResult], aggregate: AggregateResult) -> Non
 
     # Per-pair table
     print("\n--- Per-pair evaluation results ---")
-    header = f"{'pair_id':<16} {'type':<12} {'grade':<10} {'ΔE':>8} {'ECR':>8} {'GT PSNR':>9} {'measured':>12} {'target':>12}"
+    ID_W = 20
+    header = f"{'pair_id':<{ID_W}} {'type':<12} {'grade':<10} {'dE':>8} {'ECR':>8} {'GT PSNR':>9}  extra"
     print(header)
-    print("-" * len(header))
+    print("-" * 80)
 
     for r in results:
+        # Truncate pair_id to last ID_W chars so long ids don't break the table
+        pid = r.pair_id[-ID_W:] if len(r.pair_id) > ID_W else r.pair_id
+
         de = r.scores.get("delta_e", "—")
-        ecr = r.scores.get("edit_completion_ratio", "—")
+        # reposition stores ECR as "ecr", color stores it as "edit_completion_ratio"
+        ecr_val = r.scores.get("edit_completion_ratio", r.scores.get("ecr", None))
         psnr = r.scores.get("gt_psnr", "—")
-        meas = r.details.get("measured_color", "—")
-        tgt = r.details.get("target_color", "—")
 
-        de_s = f"{de:.4f}" if isinstance(de, float) else str(de)
-        ecr_s = f"{ecr:.4f}" if isinstance(ecr, float) else str(ecr)
-        psnr_s = f"{psnr:.2f}" if isinstance(psnr, float) else str(psnr)
+        de_s   = f"{de:.4f}"    if isinstance(de, float)      else str(de)
+        ecr_s  = f"{ecr_val:.4f}" if isinstance(ecr_val, float) else "—"
+        psnr_s = f"{psnr:.2f}"  if isinstance(psnr, float)    else str(psnr)
 
-        meas_c = hex_to_ansi(meas, meas) if isinstance(meas, str) else str(meas)
-        tgt_c = hex_to_ansi(tgt, tgt) if isinstance(tgt, str) else str(tgt)
+        # Extra info column: color hex swatches or reposition centroids
+        if r.edit_type == "color":
+            meas = r.details.get("measured_color", "—")
+            tgt  = r.details.get("target_color",   "—")
+            meas_s = hex_to_ansi(meas, meas) if isinstance(meas, str) else str(meas)
+            tgt_s  = hex_to_ansi(tgt,  tgt)  if isinstance(tgt,  str) else str(tgt)
+            extra = f"measured={meas_s} target={tgt_s}"
+        elif r.edit_type == "reposition":
+            mc = r.details.get("measured_centroid", "—")
+            tc = r.details.get("target_centroid",   "—")
+            mc_s = f"({mc[0]:.0f},{mc[1]:.0f})" if isinstance(mc, (tuple, list)) else str(mc)
+            tc_s = f"({tc[0]:.0f},{tc[1]:.0f})" if isinstance(tc, (tuple, list)) else str(tc)
+            dist = r.scores.get("centroid_distance", "—")
+            dist_s = f"{dist:.1f}px" if isinstance(dist, float) else str(dist)
+            extra = f"measured={mc_s} target={tc_s} dist={dist_s}"
+        else:
+            extra = ""
 
         gc = GRADE_COLORS.get(r.grade, "")
         grade_s = f"{gc}{r.grade:<10}{RESET}"
 
-        print(f"{r.pair_id:<16} {r.edit_type:<12} {grade_s} {de_s:>8} {ecr_s:>8} {psnr_s:>9} {meas_c} {tgt_c}")
+        print(f"{pid:<{ID_W}} {r.edit_type:<12} {grade_s} {de_s:>8} {ecr_s:>8} {psnr_s:>9}  {extra}")
 
         if r.failure_reasons:
             print(f"  ^ failed: {r.failure_reasons}")
