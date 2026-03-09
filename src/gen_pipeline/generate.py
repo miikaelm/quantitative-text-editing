@@ -24,8 +24,8 @@ from gen_pipeline.render import Renderer, RenderConfig
 from gen_pipeline.build_pairs import EditPair, build_pairs
 from gen_pipeline.specs.color import generate_color_specs
 from gen_pipeline.templates.color import build_color_html
-from gen_pipeline.specs.reposition import generate_reposition_specs
-from gen_pipeline.templates.reposition import build_reposition_html
+from gen_pipeline.specs.alignment import generate_alignment_specs
+from gen_pipeline.templates.alignment import build_alignment_html
 from utils.ocr import find_text_bbox
 
 
@@ -132,11 +132,11 @@ if __name__ == "__main__":
     if args.edit_type == "color":
         specs = generate_color_specs()
         pairs = build_pairs(specs, build_color_html)
-    elif args.edit_type == "reposition":
-        specs = generate_reposition_specs()
-        pairs = build_pairs(specs, build_reposition_html)
+    elif args.edit_type == "alignment":
+        specs = generate_alignment_specs()
+        pairs = build_pairs(specs, build_alignment_html)
     else:
-        print(f"Unknown edit type: {args.edit_type!r}. Supported: color, reposition")
+        print(f"Unknown edit type: {args.edit_type!r}. Supported: color, alignment")
         sys.exit(1)
 
     print(f"Generating {len(pairs)} {args.edit_type} pairs → {args.output_dir}")

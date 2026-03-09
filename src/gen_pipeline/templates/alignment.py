@@ -1,7 +1,7 @@
 """
-templates/reposition.py — HTML template builder for reposition edit pairs.
+templates/alignment.py — HTML template builder for alignment edit pairs.
 
-build_reposition_html(spec) takes a RepositionEditSpec and returns (source_html, target_html).
+build_alignment_html(spec) takes an AlignmentEditSpec and returns (source_html, target_html).
 The two documents have identical text content and styling; they differ only in
 the flexbox alignment of the body, which controls where the text sits on the canvas.
 
@@ -12,7 +12,7 @@ Position grid (justify-content × align-items):
     bottom-left   bottom-center   bottom-right
 """
 
-from gen_pipeline.specs.reposition import RepositionEditSpec
+from gen_pipeline.specs.alignment import AlignmentEditSpec
 
 
 # ---------------------------------------------------------------------------
@@ -54,11 +54,12 @@ def _parse_font_style(font_style: str) -> tuple[str, str]:
     return css_style, css_weight
 
 
-def _element_style(spec: RepositionEditSpec) -> str:
+def _element_style(spec: AlignmentEditSpec) -> str:
     css_style, css_weight = _parse_font_style(spec.font_style)
     return (
-        f"font-size:{spec.font_size}; font-family:Arial,sans-serif;"
+        f"font-size:{spec.font_size}; font-family:{spec.font_family};"
         f"color:{spec.font_color}; font-style:{css_style}; font-weight:{css_weight};"
+        f"letter-spacing:{spec.letter_spacing};"
         "margin:0;"
     )
 
@@ -67,9 +68,9 @@ def _element_style(spec: RepositionEditSpec) -> str:
 # Public builder
 # ---------------------------------------------------------------------------
 
-def build_reposition_html(spec: RepositionEditSpec) -> tuple[str, str]:
+def build_alignment_html(spec: AlignmentEditSpec) -> tuple[str, str]:
     """
-    Build source and target HTML from a RepositionEditSpec.
+    Build source and target HTML from an AlignmentEditSpec.
 
     Returns:
         (source_html, target_html) — identical text and styling, differing only
