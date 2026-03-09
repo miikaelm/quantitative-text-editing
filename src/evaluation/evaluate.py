@@ -38,7 +38,7 @@ from PIL import Image
 
 from evaluation.metrics.color import evaluate_color_edit, ColorMeasurement
 from evaluation.metrics.preservation import check_unintended_modifications
-from evaluation.metrics.reposition import evaluate_reposition_edit, bbox_centroid, RepositionMeasurement
+from evaluation.metrics.reposition import evaluate_reposition_edit, RepositionMeasurement
 from utils.ocr import find_text_bbox
 
 log = logging.getLogger(__name__)
@@ -272,20 +272,18 @@ def _evaluate_reposition(
     Evaluate a reposition edit.
 
     Uses OCR (via metadata["_output_image_path"], injected by evaluate_entry)
-    to locate the text in the model output, then checks whether it falls in
-    the expected zone for the target position.  Falls back to a zone check on
-    the ground-truth target_bbox if OCR fails or no path is available.
+    to locate the text in the model output, then measures centroid distance
+    to the ground-truth target_bbox and computes ECR if source_bbox is available.
     """
     checks: dict[str, bool] = {}
     scores: dict[str, float | str] = {}
     details: dict[str, Any] = {}
 
-    end_position = metadata.get("new_value")
-    if not end_position:
+    if "target_bbox" not in metadata:
         return PairResult(
             pair_id="", edit_type="reposition", grade="skip",
             scores={}, checks={},
-            details={"error": "new_value (end_position) missing from metadata"},
+            details={"error": "target_bbox missing from metadata"},
         )
 
     text_content = metadata.get("text_content")
@@ -298,7 +296,6 @@ def _evaluate_reposition(
         output_bbox = find_text_bbox(output_path, text_content)
 
     if output_bbox is None:
-        # OCR failed — skip grading but record why
         checks["ocr_found"] = False
         details["note"] = "OCR could not locate text in output image; reposition grade skipped"
         return PairResult(
@@ -308,38 +305,31 @@ def _evaluate_reposition(
     checks["ocr_found"] = True
 
     measurement: RepositionMeasurement = evaluate_reposition_edit(
-        bbox=output_bbox,
-        target_position=end_position,
+        target_bbox=metadata["target_bbox"],
+        measured_bbox=output_bbox,
         img_width=img_w,
         img_height=img_h,
+        original_bbox=metadata.get("source_bbox"),
     )
 
-    checks["text_in_correct_zone"] = measurement.in_correct_zone
+    scores["centroid_distance"] = measurement.centroid_distance
+    scores["normalized_distance"] = measurement.normalized_distance
+    if measurement.ecr is not None:
+        scores["ecr"] = measurement.ecr
 
-    # If ground-truth target bbox is available, compute pixel distance to it
-    if "target_bbox" in metadata:
-        tb = metadata["target_bbox"]
-        gt_cx, gt_cy = bbox_centroid(tb)
-        out_cx, out_cy = measurement.centroid
-        px_dist = ((out_cx - gt_cx) ** 2 + (out_cy - gt_cy) ** 2) ** 0.5
-        scores["pixel_distance_to_gt"] = round(px_dist, 2)
-        grade = _grade(
-            px_dist,
-            excellent=config.reposition_px_excellent,
-            good=config.reposition_px_good,
-            poor=config.reposition_px_poor,
-        )
-    else:
-        # No ground truth bbox — grade on zone membership only
-        grade = "excellent" if measurement.in_correct_zone else "fail"
+    grade = _grade(
+        measurement.centroid_distance,
+        excellent=config.reposition_px_excellent,
+        good=config.reposition_px_good,
+        poor=config.reposition_px_poor,
+    )
 
-    scores["pixel_distance_to_zone_center"] = measurement.pixel_distance
-    details["target_position"] = end_position
-    details["output_centroid"] = measurement.centroid
-    details["zone_center"] = measurement.zone_center
-
-    if not measurement.in_correct_zone and grade not in ("fail",):
-        grade = "poor"
+    details["measured_centroid"] = measurement.measured_centroid
+    details["target_centroid"] = measurement.target_centroid
+    if measurement.original_centroid is not None:
+        details["original_centroid"] = measurement.original_centroid
+    if measurement.planned_distance is not None:
+        details["planned_distance"] = measurement.planned_distance
 
     checks["position_acceptable"] = grade != "fail"
 

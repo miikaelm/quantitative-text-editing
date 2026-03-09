@@ -1,43 +1,32 @@
 """
 metrics/reposition.py — Reposition edit measurement.
 
-evaluate_reposition_edit() checks whether a text bounding box falls within
-the expected zone for a given position name (top-left, center, etc.).
+Measures positional accuracy of a text bounding box relative to
+a ground-truth target bounding box.
 
-Used by:
-  - validate.py (pipeline validation): checks the rendered ground-truth target bbox
-  - evaluate.py (model evaluation):   checks the OCR bbox of model output
+Three metrics:
+    1. Centroid distance (pixels) — raw Euclidean error between
+       measured and target bbox centers.
+    2. Normalized distance (0–1) — centroid distance divided by
+       image diagonal, resolution-independent.
+    3. Edit Completion Ratio (ECR) — analogous to color ECR.
+       Measures what fraction of the intended displacement was achieved.
+           1.0  = perfect placement
+           0.0  = text didn't move (still at original position)
+           <0   = moved further away from target than it started
+           >1   = overshot past the target
 
-Zone definitions:
-  Each named position maps to a rectangular region covering 50% of the image
-  in each axis — generous enough to tolerate varying text widths while still
-  distinguishing all nine grid positions.
-
-  The zone center is also computed so callers can report pixel distance from
-  the text centroid to where it nominally "should" be.
+Inputs are simple {x, y, width, height} bbox dicts:
+    - target_bbox:   from the ground-truth rendered target image
+    - measured_bbox:  from OCR on model output (evaluation) or
+                      from metadata (validation)
+    - original_bbox:  from the source image (needed only for ECR)
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-
-
-# ---------------------------------------------------------------------------
-# Position zones — fractional (x0, y0, x1, y1) of image dimensions
-# ---------------------------------------------------------------------------
-
-POSITION_ZONES: dict[str, tuple[float, float, float, float]] = {
-    #                    x0    y0    x1    y1
-    "top-left":       (0.0,  0.0,  0.5,  0.5),
-    "top-center":     (0.25, 0.0,  0.75, 0.5),
-    "top-right":      (0.5,  0.0,  1.0,  0.5),
-    "middle-left":    (0.0,  0.25, 0.5,  0.75),
-    "center":         (0.25, 0.25, 0.75, 0.75),
-    "middle-right":   (0.5,  0.25, 1.0,  0.75),
-    "bottom-left":    (0.0,  0.5,  0.5,  1.0),
-    "bottom-center":  (0.25, 0.5,  0.75, 1.0),
-    "bottom-right":   (0.5,  0.5,  1.0,  1.0),
-}
 
 
 # ---------------------------------------------------------------------------
@@ -46,41 +35,60 @@ POSITION_ZONES: dict[str, tuple[float, float, float, float]] = {
 
 @dataclass
 class RepositionMeasurement:
-    """Measurement result for a single reposition check."""
-    centroid: tuple[float, float]       # (cx, cy) of the measured text bbox, in pixels
-    zone_center: tuple[float, float]    # center of the expected zone, in pixels
-    pixel_distance: float               # Euclidean distance from centroid to zone center
-    in_correct_zone: bool               # True if centroid falls inside the expected zone
-    target_position: str                # The position that was checked against
+    """Measurement result for a single reposition evaluation."""
+
+    measured_centroid: tuple[float, float]
+    target_centroid: tuple[float, float]
+    centroid_distance: float          # pixels
+    normalized_distance: float        # 0–1, relative to image diagonal
+    ecr: float | None                 # Edit Completion Ratio
+    original_centroid: tuple[float, float] | None  # None if not provided
+    planned_distance: float | None    # original→target distance, pixels
+    img_width: int
+    img_height: int
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def bbox_centroid(bbox: dict) -> tuple[float, float]:
+def _centroid(bbox: dict) -> tuple[float, float]:
     """Return (cx, cy) of a {x, y, width, height} bbox dict."""
-    return (bbox["x"] + bbox["width"] / 2.0, bbox["y"] + bbox["height"] / 2.0)
+    return (
+        bbox["x"] + bbox["width"] / 2.0,
+        bbox["y"] + bbox["height"] / 2.0,
+    )
 
 
-def zone_bounds(
-    position: str,
-    img_width: int,
-    img_height: int,
-) -> tuple[float, float, float, float]:
-    """Return (x0, y0, x1, y1) zone bounds in pixels for the given position."""
-    x0f, y0f, x1f, y1f = POSITION_ZONES[position]
-    return (x0f * img_width, y0f * img_height, x1f * img_width, y1f * img_height)
+def _euclidean(a: tuple[float, float], b: tuple[float, float]) -> float:
+    return math.hypot(a[0] - b[0], a[1] - b[1])
 
 
-def zone_center(
-    position: str,
-    img_width: int,
-    img_height: int,
-) -> tuple[float, float]:
-    """Return (cx, cy) center of the zone for the given position, in pixels."""
-    x0, y0, x1, y1 = zone_bounds(position, img_width, img_height)
-    return ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+def _compute_ecr(
+    measured_centroid: tuple[float, float],
+    target_centroid: tuple[float, float],
+    original_centroid: tuple[float, float],
+    floor: float = 5.0,
+) -> tuple[float | None, float]:
+    """
+    Edit Completion Ratio.
+
+        ECR = 1 - (dist(measured, target) / dist(original, target))
+
+    Args:
+        floor: minimum planned distance in pixels below which ECR
+               is undefined (near-identity edits). Default 5px.
+
+    Returns:
+        (ecr_or_none, planned_distance)
+    """
+    planned = _euclidean(original_centroid, target_centroid)
+    if planned < floor:
+        return None, planned
+
+    residual = _euclidean(measured_centroid, target_centroid)
+    ecr = 1.0 - (residual / planned)
+    return round(ecr, 4), round(planned, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -88,43 +96,52 @@ def zone_center(
 # ---------------------------------------------------------------------------
 
 def evaluate_reposition_edit(
-    bbox: dict,
-    target_position: str,
+    target_bbox: dict,
+    measured_bbox: dict,
     img_width: int = 512,
     img_height: int = 512,
+    original_bbox: dict | None = None,
+    ecr_floor: float = 5.0,
 ) -> RepositionMeasurement:
     """
-    Check whether a text bounding box is in the correct zone for target_position.
+    Evaluate positional accuracy of a repositioned text element.
 
     Args:
-        bbox:            {x, y, width, height} of the text element (from OCR or metadata).
-        target_position: Expected position name (must be a key in POSITION_ZONES).
-        img_width:       Image width in pixels (default 512, matching RenderConfig).
-        img_height:      Image height in pixels.
+        target_bbox:   {x, y, width, height} — ground-truth target position.
+        measured_bbox:  {x, y, width, height} — observed position (OCR or metadata).
+        img_width:      Image width in pixels (default 512).
+        img_height:     Image height in pixels.
+        original_bbox:  {x, y, width, height} — pre-edit position (needed for ECR).
+                        If None, ECR is not computed.
+        ecr_floor:      Minimum planned displacement (px) for ECR to be defined.
 
     Returns:
-        RepositionMeasurement with in_correct_zone flag and pixel_distance to zone center.
-
-    Raises:
-        ValueError: If target_position is not a recognised position name.
+        RepositionMeasurement with centroid_distance, normalized_distance, and ecr.
     """
-    if target_position not in POSITION_ZONES:
-        raise ValueError(
-            f"Unknown position: {target_position!r}. "
-            f"Valid positions: {sorted(POSITION_ZONES)}"
-        )
+    m_c = _centroid(measured_bbox)
+    t_c = _centroid(target_bbox)
 
-    cx, cy = bbox_centroid(bbox)
-    x0, y0, x1, y1 = zone_bounds(target_position, img_width, img_height)
-    zc = zone_center(target_position, img_width, img_height)
+    dist = _euclidean(m_c, t_c)
+    diagonal = math.hypot(img_width, img_height)
+    norm_dist = dist / diagonal if diagonal > 0 else 0.0
 
-    in_zone = (x0 <= cx <= x1) and (y0 <= cy <= y1)
-    dist = ((cx - zc[0]) ** 2 + (cy - zc[1]) ** 2) ** 0.5
+    # ECR requires original bbox
+    ecr = None
+    o_c = None
+    planned = None
+
+    if original_bbox is not None:
+        o_c = _centroid(original_bbox)
+        ecr, planned = _compute_ecr(m_c, t_c, o_c, floor=ecr_floor)
 
     return RepositionMeasurement(
-        centroid=(round(cx, 1), round(cy, 1)),
-        zone_center=(round(zc[0], 1), round(zc[1], 1)),
-        pixel_distance=round(dist, 2),
-        in_correct_zone=in_zone,
-        target_position=target_position,
+        measured_centroid=(round(m_c[0], 1), round(m_c[1], 1)),
+        target_centroid=(round(t_c[0], 1), round(t_c[1], 1)),
+        centroid_distance=round(dist, 2),
+        normalized_distance=round(norm_dist, 4),
+        ecr=ecr,
+        original_centroid=(round(o_c[0], 1), round(o_c[1], 1)) if o_c else None,
+        planned_distance=planned,
+        img_width=img_width,
+        img_height=img_height,
     )

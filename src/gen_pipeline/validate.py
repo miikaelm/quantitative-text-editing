@@ -13,11 +13,12 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+import math
+
 import numpy as np
 from PIL import Image
 
 from evaluation.metrics.color import evaluate_color_edit, ColorMeasurement
-from evaluation.metrics.reposition import evaluate_reposition_edit, bbox_centroid
 
 
 # ---------------------------------------------------------------------------
@@ -185,11 +186,10 @@ def _validate_reposition(
     details: dict,
 ) -> None:
     """
-    Validate a reposition edit by checking that the rendered target image
-    has text in the correct zone for the end_position.
+    Validate a reposition edit by verifying text moved from source to target.
 
-    Uses the OCR bboxes stored in metadata by generate.py, so no OCR is
-    re-run here.
+    Uses OCR bboxes stored in metadata by generate.py, so no OCR is re-run here.
+    Checks that the target_bbox centroid is sufficiently displaced from source_bbox.
     """
     if "target_bbox" not in metadata:
         checks["bbox_available"] = False
@@ -198,31 +198,19 @@ def _validate_reposition(
     checks["bbox_available"] = True
 
     tb = metadata["target_bbox"]
-    end_position = metadata["new_value"]   # old_value = start, new_value = end
-    img_h, img_w = target_img.shape[:2]
+    tgt_cx = tb["x"] + tb["width"] / 2.0
+    tgt_cy = tb["y"] + tb["height"] / 2.0
+    details["target_centroid"] = (round(tgt_cx, 1), round(tgt_cy, 1))
 
-    measurement = evaluate_reposition_edit(
-        bbox=tb,
-        target_position=end_position,
-        img_width=img_w,
-        img_height=img_h,
-    )
-
-    checks["text_in_correct_zone"] = measurement.in_correct_zone
-
-    # Verify text actually moved (sanity check using source_bbox if available)
+    # Verify text actually moved from its original position
     if "source_bbox" in metadata:
         sb = metadata["source_bbox"]
-        src_cx, src_cy = bbox_centroid(sb)
-        tgt_cx, tgt_cy = measurement.centroid
-        pixels_moved = ((tgt_cx - src_cx) ** 2 + (tgt_cy - src_cy) ** 2) ** 0.5
+        src_cx = sb["x"] + sb["width"] / 2.0
+        src_cy = sb["y"] + sb["height"] / 2.0
+        pixels_moved = math.hypot(tgt_cx - src_cx, tgt_cy - src_cy)
         checks["text_moved"] = pixels_moved > 20   # at least 20px displacement
         details["pixels_moved"] = round(pixels_moved, 1)
-
-    details["target_position"] = end_position
-    details["measured_centroid"] = measurement.centroid
-    details["zone_center"] = measurement.zone_center
-    details["pixel_distance_to_zone_center"] = measurement.pixel_distance
+        details["source_centroid"] = (round(src_cx, 1), round(src_cy, 1))
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +220,7 @@ def _validate_reposition(
 _VALIDATORS = {
     "color":      _validate_color,
     "reposition": _validate_reposition,
+    "alignment":  _validate_reposition,   # same positional validation logic
     # "scaling":  _validate_scaling,
     # "content":  _validate_content,
 }

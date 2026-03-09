@@ -239,6 +239,8 @@ def evaluate_color_edit(
             match_offset=offset,
             measured_hex="#000000",
             target_hex=target_color_hex.upper(),
+            edit_completion_ratio=None,
+            planned_delta_e=planned_delta_e
         )
 
     text_pixels = output_region[text_mask]  # N×3
