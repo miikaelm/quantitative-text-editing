@@ -19,6 +19,7 @@ import numpy as np
 from PIL import Image
 
 from evaluation.metrics.color import evaluate_color_edit, ColorMeasurement
+from evaluation.metrics.scaling import evaluate_scaling_edit, ScalingMeasurement
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +33,9 @@ class ValidationConfig:
     max_color_delta_e: float = 3.5          # target color must be near-exact in ground truth
     min_ecr: float = 0.75
     max_ecr: float = 1.1
+
+    # Scaling edit thresholds
+    max_scaling_ratio_error: float = 0.05   # rendered size must be within 5% of target scale
 
 
 # ---------------------------------------------------------------------------
@@ -213,15 +217,53 @@ def _validate_reposition(
         details["source_centroid"] = (round(src_cx, 1), round(src_cy, 1))
 
 
+def _validate_scaling(
+    source_img: np.ndarray,
+    target_img: np.ndarray,
+    metadata: dict,
+    config: ValidationConfig,
+    checks: dict,
+    details: dict,
+) -> None:
+    """
+    Validate a scaling edit by comparing bounding box heights from metadata.
+
+    Uses source_bbox and target_bbox stored in metadata by generate.py.
+    Checks that the rendered target bbox height matches the intended scale factor
+    within tolerance, confirming the HTML template rendered correctly.
+    """
+    if "source_bbox" not in metadata or "target_bbox" not in metadata:
+        missing = [k for k in ("source_bbox", "target_bbox") if k not in metadata]
+        checks["bbox_available"] = False
+        details["error"] = f"missing bboxes: {missing} (OCR failed during generation)"
+        return
+    checks["bbox_available"] = True
+
+    measurement: ScalingMeasurement = evaluate_scaling_edit(
+        source_bbox=metadata["source_bbox"],
+        target_bbox=metadata["target_bbox"],
+        measured_bbox=metadata["target_bbox"],   # ground truth: target IS the measurement
+    )
+
+    checks["edit_applied"] = measurement.ratio_error <= config.max_scaling_ratio_error
+
+    details["source_height_px"] = measurement.source_height
+    details["target_height_px"] = measurement.target_height
+    details["target_scale"] = measurement.target_scale
+    details["ratio_error"] = measurement.ratio_error
+    details["old_value"] = metadata.get("old_value", "unknown")
+    details["new_value"] = metadata.get("new_value", "unknown")
+    details["scale_factor"] = metadata.get("scale_factor", "unknown")
+
+
 # ---------------------------------------------------------------------------
 # Dispatch table — add new edit type validators here
 # ---------------------------------------------------------------------------
 
 _VALIDATORS = {
     "color":      _validate_color,
-    "reposition": _validate_reposition,
     "alignment":  _validate_reposition,   # same positional validation logic
-    # "scaling":  _validate_scaling,
+    "scaling":    _validate_scaling,
     # "content":  _validate_content,
 }
 

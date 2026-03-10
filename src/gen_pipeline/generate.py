@@ -26,6 +26,8 @@ from gen_pipeline.specs.color import generate_color_specs
 from gen_pipeline.templates.color import build_color_html
 from gen_pipeline.specs.alignment import generate_alignment_specs
 from gen_pipeline.templates.alignment import build_alignment_html
+from gen_pipeline.specs.scaling import generate_scaling_specs
+from gen_pipeline.templates.scaling import build_scaling_html
 from utils.ocr import find_text_bbox
 
 
@@ -135,8 +137,11 @@ if __name__ == "__main__":
     elif args.edit_type == "alignment":
         specs = generate_alignment_specs()
         pairs = build_pairs(specs, build_alignment_html)
+    elif args.edit_type == "scaling":
+        specs = generate_scaling_specs()
+        pairs = build_pairs(specs, build_scaling_html)
     else:
-        print(f"Unknown edit type: {args.edit_type!r}. Supported: color, alignment")
+        print(f"Unknown edit type: {args.edit_type!r}. Supported: color, alignment, scaling")
         sys.exit(1)
 
     print(f"Generating {len(pairs)} {args.edit_type} pairs → {args.output_dir}")

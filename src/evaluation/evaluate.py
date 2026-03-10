@@ -39,6 +39,7 @@ from PIL import Image
 from evaluation.metrics.color import evaluate_color_edit, ColorMeasurement
 from evaluation.metrics.preservation import check_unintended_modifications
 from evaluation.metrics.reposition import evaluate_reposition_edit, RepositionMeasurement
+from evaluation.metrics.scaling import evaluate_scaling_edit, ScalingMeasurement
 from utils.ocr import find_text_bbox
 
 log = logging.getLogger(__name__)
@@ -367,11 +368,77 @@ def _evaluate_scaling(
     metadata: dict,
     config: EvalConfig,
 ) -> PairResult:
-    """Evaluate a scaling edit. TODO: implement with bounding box area ratio."""
+    """
+    Evaluate a scaling edit.
+
+    Uses OCR on the model output to locate the text, then compares the measured
+    bounding box height against the ground-truth target_bbox height to compute
+    ratio_error and ECR.
+    """
+    checks: dict[str, bool] = {}
+    scores: dict[str, float | str] = {}
+    details: dict[str, Any] = {}
+
+    if "source_bbox" not in metadata or "target_bbox" not in metadata:
+        missing = [k for k in ("source_bbox", "target_bbox") if k not in metadata]
+        return PairResult(
+            pair_id="", edit_type="scaling", grade="skip",
+            scores={}, checks={},
+            details={"error": f"missing bboxes: {missing}"},
+        )
+
+    text_content = metadata.get("text_content")
+    output_path = metadata.get("_output_image_path")
+
+    # OCR the output image to find where text actually ended up
+    output_bbox: dict | None = None
+    if output_path and text_content:
+        output_bbox = find_text_bbox(output_path, text_content)
+
+    if output_bbox is None:
+        checks["ocr_found"] = False
+        details["note"] = "OCR could not locate text in output image; scaling grade skipped"
+        return PairResult(
+            pair_id="", edit_type="scaling", grade="skip",
+            scores=scores, checks=checks, details=details,
+        )
+    checks["ocr_found"] = True
+
+    measurement: ScalingMeasurement = evaluate_scaling_edit(
+        source_bbox=metadata["source_bbox"],
+        target_bbox=metadata["target_bbox"],
+        measured_bbox=output_bbox,
+    )
+
+    scores["ratio_error"] = measurement.ratio_error
+    scores["measured_scale"] = measurement.measured_scale
+    scores["target_scale"] = measurement.target_scale
+    if measurement.ecr is not None:
+        scores["ecr"] = measurement.ecr
+
+    details["source_height_px"] = measurement.source_height
+    details["target_height_px"] = measurement.target_height
+    details["measured_height_px"] = measurement.measured_height
+    details["old_value"] = metadata.get("old_value", "unknown")
+    details["new_value"] = metadata.get("new_value", "unknown")
+    details["scale_factor"] = metadata.get("scale_factor", "unknown")
+
+    grade = _grade(
+        measurement.ratio_error,
+        excellent=config.scaling_ratio_excellent,
+        good=config.scaling_ratio_good,
+        poor=config.scaling_ratio_poor,
+    )
+
+    # Downgrade if ECR indicates the model barely changed the size
+    if measurement.ecr is not None and measurement.ecr < 0.3 and grade != "fail":
+        grade = "poor"
+
+    checks["scale_acceptable"] = grade != "fail"
+
     return PairResult(
-        pair_id="", edit_type="scaling", grade="skip",
-        scores={}, checks={},
-        details={"note": "scaling evaluation not yet implemented"},
+        pair_id="", edit_type="scaling",
+        grade=grade, scores=scores, checks=checks, details=details,
     )
 
 
@@ -592,7 +659,7 @@ def _print_results(results: list[PairResult], aggregate: AggregateResult) -> Non
             meas_s = hex_to_ansi(meas, meas) if isinstance(meas, str) else str(meas)
             tgt_s  = hex_to_ansi(tgt,  tgt)  if isinstance(tgt,  str) else str(tgt)
             extra = f"measured={meas_s} target={tgt_s}"
-        elif r.edit_type == "reposition":
+        elif r.edit_type in ("reposition", "alignment"):
             mc = r.details.get("measured_centroid", "—")
             tc = r.details.get("target_centroid",   "—")
             mc_s = f"({mc[0]:.0f},{mc[1]:.0f})" if isinstance(mc, (tuple, list)) else str(mc)
@@ -600,6 +667,14 @@ def _print_results(results: list[PairResult], aggregate: AggregateResult) -> Non
             dist = r.scores.get("centroid_distance", "—")
             dist_s = f"{dist:.1f}px" if isinstance(dist, float) else str(dist)
             extra = f"measured={mc_s} target={tc_s} dist={dist_s}"
+        elif r.edit_type == "scaling":
+            ms = r.scores.get("measured_scale", "—")
+            ts = r.scores.get("target_scale",   "—")
+            re = r.scores.get("ratio_error",    "—")
+            ms_s = f"{ms:.3f}x" if isinstance(ms, float) else str(ms)
+            ts_s = f"{ts:.3f}x" if isinstance(ts, float) else str(ts)
+            re_s = f"{re:.4f}" if isinstance(re, float) else str(re)
+            extra = f"measured={ms_s} target={ts_s} err={re_s}"
         else:
             extra = ""
 
