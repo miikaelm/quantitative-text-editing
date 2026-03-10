@@ -28,6 +28,8 @@ from gen_pipeline.specs.alignment import generate_alignment_specs
 from gen_pipeline.templates.alignment import build_alignment_html
 from gen_pipeline.specs.scaling import generate_scaling_specs
 from gen_pipeline.templates.scaling import build_scaling_html
+from gen_pipeline.specs.typography import generate_typography_specs
+from gen_pipeline.templates.typography import build_typography_html
 from utils.ocr import find_text_bbox
 
 
@@ -48,6 +50,53 @@ class GenerateConfig:
 
 # ---------------------------------------------------------------------------
 # Rendering + JSONL writing
+# ---------------------------------------------------------------------------
+# Typography post-render reference measurement
+# ---------------------------------------------------------------------------
+
+def _add_typography_reference_measurements(record: dict, src_path, tgt_path) -> None:
+    """
+    Compute pixel-based reference measurements for font_weight and font_style
+    subcategories and store them in record["metadata"].
+
+    Called after rendering so that the evaluator can compare source/target
+    reference values against the model output without needing the target image.
+    """
+    subcategory = record["metadata"].get("typography_subcategory")
+    if subcategory not in ("font_weight", "font_style"):
+        return
+
+    try:
+        import numpy as np
+        from PIL import Image
+        from evaluation.metrics.typography import (
+            binarize_text_region,
+            compute_stroke_width,
+            compute_shear_angle,
+        )
+    except ImportError:
+        return  # silently skip if dependencies are missing
+
+    src_bbox = record["metadata"].get("source_bbox")
+    tgt_bbox = record["metadata"].get("target_bbox")
+    if src_bbox is None or tgt_bbox is None:
+        return
+
+    src_img = np.array(Image.open(src_path).convert("RGB"))
+    tgt_img = np.array(Image.open(tgt_path).convert("RGB"))
+
+    if subcategory == "font_weight":
+        src_bin = binarize_text_region(src_img, src_bbox)
+        tgt_bin = binarize_text_region(tgt_img, tgt_bbox)
+        record["metadata"]["source_stroke_width"] = round(compute_stroke_width(src_bin), 3)
+        record["metadata"]["target_stroke_width"] = round(compute_stroke_width(tgt_bin), 3)
+    elif subcategory == "font_style":
+        src_bin = binarize_text_region(src_img, src_bbox)
+        tgt_bin = binarize_text_region(tgt_img, tgt_bbox)
+        record["metadata"]["source_shear_angle"] = round(compute_shear_angle(src_bin), 3)
+        record["metadata"]["target_shear_angle"] = round(compute_shear_angle(tgt_bin), 3)
+
+
 # ---------------------------------------------------------------------------
 
 async def generate_pairs(
@@ -92,6 +141,11 @@ async def generate_pairs(
                         record["metadata"]["target_bbox"] = tgt_bbox
                     else:
                         print(f"  [{pair.pair_id}] WARNING: OCR could not locate '{text_content}' in target image")
+
+                # For typography edits that need pixel-based reference measurements,
+                # compute and store them now while we have access to both rendered images.
+                if config.edit_type == "typography":
+                    _add_typography_reference_measurements(record, src_result.image_path, tgt_result.image_path)
 
                 if src_result.errors or tgt_result.errors:
                     record["render_errors"] = src_result.errors + tgt_result.errors
@@ -140,8 +194,11 @@ if __name__ == "__main__":
     elif args.edit_type == "scaling":
         specs = generate_scaling_specs()
         pairs = build_pairs(specs, build_scaling_html)
+    elif args.edit_type == "typography":
+        specs = generate_typography_specs()
+        pairs = build_pairs(specs, build_typography_html)
     else:
-        print(f"Unknown edit type: {args.edit_type!r}. Supported: color, alignment, scaling")
+        print(f"Unknown edit type: {args.edit_type!r}. Supported: color, alignment, scaling, typography")
         sys.exit(1)
 
     print(f"Generating {len(pairs)} {args.edit_type} pairs → {args.output_dir}")

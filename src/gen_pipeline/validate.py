@@ -20,6 +20,13 @@ from PIL import Image
 
 from evaluation.metrics.color import evaluate_color_edit, ColorMeasurement
 from evaluation.metrics.scaling import evaluate_scaling_edit, ScalingMeasurement
+from evaluation.metrics.typography import (
+    evaluate_typography_edit,
+    TypographyMeasurement,
+    binarize_text_region,
+    compute_stroke_width,
+    compute_shear_angle,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +43,13 @@ class ValidationConfig:
 
     # Scaling edit thresholds
     max_scaling_ratio_error: float = 0.05   # rendered size must be within 5% of target scale
+
+    # Typography edit thresholds
+    max_typography_absolute_error: float = 1.5   # stroke width or shear angle tolerance
+    max_typography_aspect_ratio_error: float = 0.15  # aspect ratio tolerance for font_family
+    max_typography_spacing_ratio_error: float = 0.10  # spacing ratio tolerance for letter_spacing
+    min_typography_ecr: float = 0.70
+    max_typography_ecr: float = 1.15
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +270,90 @@ def _validate_scaling(
     details["scale_factor"] = metadata.get("scale_factor", "unknown")
 
 
+def _validate_typography(
+    source_img: np.ndarray,
+    target_img: np.ndarray,
+    metadata: dict,
+    config: ValidationConfig,
+    checks: dict,
+    details: dict,
+) -> None:
+    """
+    Validate a typography edit by comparing the ground-truth target to the source.
+
+    For font_weight and font_style: computes pixel-based measurements from images.
+    For font_family and letter_spacing: uses OCR bounding boxes from metadata.
+
+    In the pipeline validation context, target IS the ground truth, so the edit
+    should be fully applied (ECR ≈ 1.0) and within tolerance.
+    """
+    subcategory = metadata.get("typography_subcategory", "unknown")
+    details["typography_subcategory"] = subcategory
+
+    if "source_bbox" not in metadata:
+        checks["bbox_available"] = False
+        details["error"] = "source_bbox missing (OCR failed during generation)"
+        return
+    checks["bbox_available"] = True
+
+    source_bbox = metadata["source_bbox"]
+
+    if subcategory in ("font_weight", "font_style"):
+        # Pixel-based validation using both images
+        src_bin = binarize_text_region(source_img, source_bbox)
+
+        if subcategory == "font_weight":
+            tgt_bbox = metadata.get("target_bbox", source_bbox)
+            tgt_bin = binarize_text_region(target_img, tgt_bbox)
+            source_sw = compute_stroke_width(src_bin)
+            target_sw = compute_stroke_width(tgt_bin)
+            planned_delta = abs(target_sw - source_sw)
+            details["source_stroke_width"] = round(source_sw, 3)
+            details["target_stroke_width"] = round(target_sw, 3)
+            details["planned_stroke_delta"] = round(planned_delta, 3)
+            checks["edit_applied"] = planned_delta >= 0.5   # at least 0.5px stroke change
+
+        else:  # font_style
+            tgt_bbox = metadata.get("target_bbox", source_bbox)
+            tgt_bin = binarize_text_region(target_img, tgt_bbox)
+            source_angle = compute_shear_angle(src_bin)
+            target_angle = compute_shear_angle(tgt_bin)
+            planned_delta = abs(target_angle - source_angle)
+            details["source_shear_angle"] = round(source_angle, 3)
+            details["target_shear_angle"] = round(target_angle, 3)
+            details["planned_angle_delta"] = round(planned_delta, 3)
+            checks["edit_applied"] = planned_delta >= 3.0   # at least 3° of shear change
+
+    elif subcategory in ("font_family", "letter_spacing"):
+        if "target_bbox" not in metadata:
+            checks["bbox_available"] = False
+            details["error"] = "target_bbox missing (OCR failed during generation)"
+            return
+
+        tb = metadata["target_bbox"]
+        sb = metadata["source_bbox"]
+
+        def _ar(bbox):
+            return bbox["width"] / max(bbox["height"], 1.0)
+
+        source_ar = _ar(sb)
+        target_ar = _ar(tb)
+        planned_delta = abs(target_ar - source_ar)
+
+        label = "aspect_ratio" if subcategory == "font_family" else "spacing_ratio"
+        thresh = (config.max_typography_aspect_ratio_error
+                  if subcategory == "font_family"
+                  else config.max_typography_spacing_ratio_error)
+
+        details[f"source_{label}"] = round(source_ar, 4)
+        details[f"target_{label}"] = round(target_ar, 4)
+        details[f"planned_{label}_delta"] = round(planned_delta, 4)
+        checks["edit_applied"] = planned_delta >= thresh * 0.5  # minimum detectable change
+
+    else:
+        details["note"] = f"typography subcategory {subcategory!r} validation not yet implemented"
+
+
 # ---------------------------------------------------------------------------
 # Dispatch table — add new edit type validators here
 # ---------------------------------------------------------------------------
@@ -264,6 +362,7 @@ _VALIDATORS = {
     "color":      _validate_color,
     "alignment":  _validate_reposition,   # same positional validation logic
     "scaling":    _validate_scaling,
+    "typography": _validate_typography,
     # "content":  _validate_content,
 }
 

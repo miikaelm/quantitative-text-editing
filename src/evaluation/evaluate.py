@@ -40,6 +40,7 @@ from evaluation.metrics.color import evaluate_color_edit, ColorMeasurement
 from evaluation.metrics.preservation import check_unintended_modifications
 from evaluation.metrics.reposition import evaluate_reposition_edit, RepositionMeasurement
 from evaluation.metrics.scaling import evaluate_scaling_edit, ScalingMeasurement
+from evaluation.metrics.typography import evaluate_typography_edit, TypographyMeasurement
 from utils.ocr import find_text_bbox
 
 log = logging.getLogger(__name__)
@@ -83,6 +84,22 @@ class EvalConfig:
     content_cer_excellent: float = 0.0      # exact match
     content_cer_good: float = 0.1
     content_cer_poor: float = 0.3
+
+    # Typography thresholds — shared across subcategories (absolute_error scale)
+    # font_weight (stroke_width_px): excellent/good/poor absolute error in px
+    typography_fw_excellent: float = 0.5
+    typography_fw_good: float = 1.5
+    typography_fw_poor: float = 3.0
+    # font_style (shear_angle_deg): excellent/good/poor error in degrees
+    typography_fs_excellent: float = 2.0
+    typography_fs_good: float = 5.0
+    typography_fs_poor: float = 10.0
+    # font_family / letter_spacing (aspect/spacing ratio): excellent/good/poor ratio error
+    typography_ar_excellent: float = 0.05
+    typography_ar_good: float = 0.15
+    typography_ar_poor: float = 0.40
+    # ECR guard for all typography subtypes
+    typography_ecr_min: float = 0.5
 
 
 # ---------------------------------------------------------------------------
@@ -456,11 +473,115 @@ def _evaluate_content(
     )
 
 
+def _evaluate_typography(
+    source_img: np.ndarray,
+    output_img: np.ndarray,
+    metadata: dict,
+    config: EvalConfig,
+) -> PairResult:
+    """
+    Evaluate a typography edit (font_weight, font_style, font_family, letter_spacing).
+
+    Uses OCR on the model output to locate the text, then calls the appropriate
+    subcategory metric.  Grades on absolute_error with ECR as a secondary guard.
+    """
+    checks: dict[str, bool] = {}
+    scores: dict[str, float | str] = {}
+    details: dict[str, Any] = {}
+
+    subcategory = metadata.get("typography_subcategory", "unknown")
+    details["typography_subcategory"] = subcategory
+
+    if "source_bbox" not in metadata:
+        return PairResult(
+            pair_id="", edit_type="typography", grade="skip",
+            scores={}, checks={},
+            details={"error": "source_bbox missing from metadata"},
+        )
+
+    text_content = metadata.get("text_content")
+    output_path = metadata.get("_output_image_path")
+
+    # For font_family and letter_spacing we need an OCR bbox from the output image
+    # to compute the aspect/spacing ratio.  For font_weight and font_style we also
+    # need it to crop the output text region for pixel analysis.
+    output_bbox: dict | None = None
+    if output_path and text_content:
+        output_bbox = find_text_bbox(output_path, text_content)
+
+    if output_bbox is None:
+        checks["ocr_found"] = False
+        details["note"] = "OCR could not locate text in output image; typography grade skipped"
+        return PairResult(
+            pair_id="", edit_type="typography", grade="skip",
+            scores=scores, checks=checks, details=details,
+        )
+    checks["ocr_found"] = True
+
+    measurement: TypographyMeasurement = evaluate_typography_edit(
+        source_img=source_img,
+        output_img=output_img,
+        metadata=metadata,
+        measured_bbox=output_bbox,
+    )
+
+    scores["absolute_error"] = measurement.absolute_error
+    scores["primary_metric"] = measurement.primary_metric
+    scores["measured_value"] = measurement.measured_value
+    scores["target_value"] = measurement.target_value
+    if measurement.ecr is not None:
+        scores["ecr"] = measurement.ecr
+
+    details["source_value"] = measurement.source_value
+    details["planned_delta"] = measurement.planned_delta
+    details["old_value"] = metadata.get("old_value", "unknown")
+    details["new_value"] = metadata.get("new_value", "unknown")
+
+    # Select grading thresholds based on subcategory
+    if subcategory == "font_weight":
+        grade = _grade(
+            measurement.absolute_error,
+            excellent=config.typography_fw_excellent,
+            good=config.typography_fw_good,
+            poor=config.typography_fw_poor,
+        )
+    elif subcategory == "font_style":
+        grade = _grade(
+            measurement.absolute_error,
+            excellent=config.typography_fs_excellent,
+            good=config.typography_fs_good,
+            poor=config.typography_fs_poor,
+        )
+    else:  # font_family and letter_spacing use ratio-based thresholds
+        grade = _grade(
+            measurement.absolute_error,
+            excellent=config.typography_ar_excellent,
+            good=config.typography_ar_good,
+            poor=config.typography_ar_poor,
+        )
+
+    # ECR guard: downgrade if edit barely happened
+    if measurement.ecr is not None and measurement.ecr < config.typography_ecr_min:
+        if grade not in ("fail",):
+            grade = "poor"
+        checks["ecr_sufficient"] = False
+    elif measurement.ecr is not None:
+        checks["ecr_sufficient"] = True
+
+    checks["typography_acceptable"] = grade != "fail"
+
+    return PairResult(
+        pair_id="", edit_type="typography",
+        grade=grade, scores=scores, checks=checks, details=details,
+    )
+
+
 _EVALUATORS = {
     "color": _evaluate_color,
     "reposition": _evaluate_reposition,
     "scaling": _evaluate_scaling,
     "content": _evaluate_content,
+    "typography": _evaluate_typography,
 }
 
 
@@ -675,6 +796,16 @@ def _print_results(results: list[PairResult], aggregate: AggregateResult) -> Non
             ts_s = f"{ts:.3f}x" if isinstance(ts, float) else str(ts)
             re_s = f"{re:.4f}" if isinstance(re, float) else str(re)
             extra = f"measured={ms_s} target={ts_s} err={re_s}"
+        elif r.edit_type == "typography":
+            sub = r.details.get("typography_subcategory", "—")
+            mv = r.scores.get("measured_value", "—")
+            tv = r.scores.get("target_value",   "—")
+            ae = r.scores.get("absolute_error", "—")
+            pm = r.scores.get("primary_metric", "")
+            mv_s = f"{mv:.3f}" if isinstance(mv, float) else str(mv)
+            tv_s = f"{tv:.3f}" if isinstance(tv, float) else str(tv)
+            ae_s = f"{ae:.4f}" if isinstance(ae, float) else str(ae)
+            extra = f"[{sub}] {pm} measured={mv_s} target={tv_s} err={ae_s}"
         else:
             extra = ""
 
