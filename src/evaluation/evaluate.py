@@ -41,6 +41,7 @@ from evaluation.metrics.preservation import check_unintended_modifications
 from evaluation.metrics.reposition import evaluate_reposition_edit, RepositionMeasurement
 from evaluation.metrics.scaling import evaluate_scaling_edit, ScalingMeasurement
 from evaluation.metrics.typography import evaluate_typography_edit, TypographyMeasurement
+from evaluation.metrics.rotation import evaluate_rotation_edit, RotationMeasurement
 from utils.ocr import find_text_bbox
 
 log = logging.getLogger(__name__)
@@ -100,6 +101,11 @@ class EvalConfig:
     typography_ar_poor: float = 0.40
     # ECR guard for all typography subtypes
     typography_ecr_min: float = 0.5
+
+    # Rotation thresholds (angle error in degrees)
+    rotation_angle_excellent: float = 2.0
+    rotation_angle_good: float = 8.0
+    rotation_angle_poor: float = 20.0
 
 
 # ---------------------------------------------------------------------------
@@ -576,12 +582,67 @@ def _evaluate_typography(
     )
 
 
+def _evaluate_rotation(
+    source_img: np.ndarray,
+    output_img: np.ndarray,
+    metadata: dict,
+    config: EvalConfig,
+) -> PairResult:
+    """
+    Evaluate a rotation edit by estimating the angle of the output image via
+    an NCC-based angle sweep against the source image.  No OCR required.
+    """
+    checks: dict[str, bool] = {}
+    scores: dict[str, float | str] = {}
+    details: dict[str, Any] = {}
+
+    if "old_angle_deg" not in metadata or "new_angle_deg" not in metadata:
+        return PairResult(
+            pair_id="", edit_type="rotation", grade="skip",
+            scores={}, checks={},
+            details={"error": "old_angle_deg / new_angle_deg missing from metadata"},
+        )
+
+    measurement: RotationMeasurement = evaluate_rotation_edit(
+        source_img=source_img,
+        output_img=output_img,
+        metadata=metadata,
+    )
+
+    scores["angle_error_deg"] = measurement.angle_error_deg
+    scores["measured_angle_deg"] = measurement.measured_angle_deg
+    scores["target_angle_deg"] = measurement.target_angle_deg
+    scores["search_score"] = measurement.search_score
+    if measurement.ecr is not None:
+        scores["ecr"] = measurement.ecr
+
+    details["source_angle_deg"] = measurement.source_angle_deg
+    details["rotation_delta_deg"] = measurement.rotation_delta_deg
+    details["old_value"] = metadata.get("old_value", "unknown")
+    details["new_value"] = metadata.get("new_value", "unknown")
+
+    grade = _grade(
+        measurement.angle_error_deg,
+        excellent=config.rotation_angle_excellent,
+        good=config.rotation_angle_good,
+        poor=config.rotation_angle_poor,
+    )
+
+    checks["rotation_acceptable"] = grade != "fail"
+
+    return PairResult(
+        pair_id="", edit_type="rotation",
+        grade=grade, scores=scores, checks=checks, details=details,
+    )
+
+
 _EVALUATORS = {
     "color": _evaluate_color,
     "reposition": _evaluate_reposition,
     "scaling": _evaluate_scaling,
     "content": _evaluate_content,
     "typography": _evaluate_typography,
+    "rotation": _evaluate_rotation,
 }
 
 
@@ -806,6 +867,16 @@ def _print_results(results: list[PairResult], aggregate: AggregateResult) -> Non
             tv_s = f"{tv:.3f}" if isinstance(tv, float) else str(tv)
             ae_s = f"{ae:.4f}" if isinstance(ae, float) else str(ae)
             extra = f"[{sub}] {pm} measured={mv_s} target={tv_s} err={ae_s}"
+        elif r.edit_type == "rotation":
+            ma = r.scores.get("measured_angle_deg", "—")
+            ta = r.scores.get("target_angle_deg",   "—")
+            ae = r.scores.get("angle_error_deg",    "—")
+            ss = r.scores.get("search_score",       "—")
+            ma_s = f"{ma:.1f}°" if isinstance(ma, float) else str(ma)
+            ta_s = f"{ta:.1f}°" if isinstance(ta, float) else str(ta)
+            ae_s = f"{ae:.2f}°" if isinstance(ae, float) else str(ae)
+            ss_s = f"{ss:.4f}"  if isinstance(ss, float) else str(ss)
+            extra = f"measured={ma_s} target={ta_s} err={ae_s} ncc={ss_s}"
         else:
             extra = ""
 
@@ -832,7 +903,7 @@ def _print_results(results: list[PairResult], aggregate: AggregateResult) -> Non
         count = summary["by_grade"][grade]
         gc = GRADE_COLORS.get(grade, "")
         pct = count / aggregate.total * 100 if aggregate.total else 0
-        bar = "█" * int(pct / 2)
+        bar = "#" * int(pct / 2)
         print(f"  {gc}{grade:<10}{RESET} {count:>4}  ({pct:5.1f}%)  {bar}")
 
     if summary["by_edit_type"]:

@@ -30,6 +30,8 @@ from gen_pipeline.specs.scaling import generate_scaling_specs
 from gen_pipeline.templates.scaling import build_scaling_html
 from gen_pipeline.specs.typography import generate_typography_specs
 from gen_pipeline.templates.typography import build_typography_html
+from gen_pipeline.specs.rotation import generate_rotation_specs
+from gen_pipeline.templates.rotation import build_rotation_html
 from utils.ocr import find_text_bbox
 
 
@@ -197,8 +199,11 @@ if __name__ == "__main__":
     elif args.edit_type == "typography":
         specs = generate_typography_specs()
         pairs = build_pairs(specs, build_typography_html)
+    elif args.edit_type == "rotation":
+        specs = generate_rotation_specs()
+        pairs = build_pairs(specs, build_rotation_html)
     else:
-        print(f"Unknown edit type: {args.edit_type!r}. Supported: color, alignment, scaling, typography")
+        print(f"Unknown edit type: {args.edit_type!r}. Supported: color, alignment, scaling, typography, rotation")
         sys.exit(1)
 
     print(f"Generating {len(pairs)} {args.edit_type} pairs → {args.output_dir}")
