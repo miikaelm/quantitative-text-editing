@@ -338,13 +338,22 @@ def _build_alignment_edit(
 
 _ALIGNMENT_HUMAN: dict[str, str] = {
     # split_panel vertical positions
-    "top":           "top",
-    "center":        "center",
-    "bottom":        "bottom",
-    # title_byline horizontal positions
-    "bottom-left":   "bottom-left corner",
-    "bottom-center": "bottom center",
-    "bottom-right":  "bottom-right corner",
+    "top":              "top",
+    "center":           "center",
+    "bottom":           "bottom",
+    # title_byline / banner_caption horizontal positions
+    "bottom-left":      "bottom-left corner",
+    "bottom-center":    "bottom center",
+    "bottom-right":     "bottom-right corner",
+    # solo_headline vertical positions
+    "top-center":       "top center",
+    "bottom-center":    "bottom center",
+    # corner_badge corner positions
+    "top-left":         "top-left corner",
+    "top-right":        "top-right corner",
+    # banner_caption caption text-alignment
+    "left":             "left",
+    "right":            "right",
 }
 
 

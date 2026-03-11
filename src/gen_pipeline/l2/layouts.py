@@ -8,6 +8,8 @@ A LayoutDefinition declares:
   - role_base_styles: default font-size, weight, style, spacing per role
   - html_builder: function (contents, src_styles, tgt_styles, bg) -> (src_html, tgt_html)
 
+Font size should be kept over 30 px
+
 Usage:
     from gen_pipeline.l2.layouts import get_layouts_for_edit, get_layout, all_layouts
 
@@ -386,4 +388,305 @@ register(LayoutDefinition(
         "descriptor": {"font_size_px": 30, "font_weight": "normal", "font_style": "normal", "letter_spacing": "normal", "is_heading": False},
     },
     html_builder=_build_split_panel,
+))
+
+# ---------------------------------------------------------------------------
+# Layout 6: solo_headline — single centered text element
+#
+# Supports: all edit types.
+# The only single-role layout. Rotation is safe (no neighbouring elements).
+# Alignment moves the headline to different screen regions.
+# Ideal for isolating individual edit effects with zero confounds.
+# ---------------------------------------------------------------------------
+
+_SOLO_POS_CSS: dict[str, str] = {
+    "center":     "justify-content:center; align-items:center",
+    "top-center": "justify-content:center; align-items:flex-start; padding-top:80px",
+    "bottom-center": "justify-content:center; align-items:flex-end; padding-bottom:80px",
+}
+
+
+def _build_solo_headline(
+    contents: dict[str, str],
+    src_styles: dict[str, dict],
+    tgt_styles: dict[str, dict],
+    bg: str,
+) -> tuple[str, str]:
+    def _html(styles: dict[str, dict]) -> str:
+        alignment = styles["headline"].get("alignment", "center")
+        pos_css = _SOLO_POS_CSS[alignment]
+        body = (
+            f"margin:0; background:{bg}; display:flex; {pos_css};"
+            "height:100vh; box-sizing:border-box;"
+        )
+        headline_css = _role_css(styles["headline"]) + "; text-align:center; max-width:80%"
+        return (
+            f'<!DOCTYPE html><html><body style="{body}">'
+            f'<h1 style="{headline_css}">{contents["headline"]}</h1>'
+            f'</body></html>'
+        )
+    return _html(src_styles), _html(tgt_styles)
+
+
+register(LayoutDefinition(
+    name="solo_headline",
+    roles=["headline"],
+    supported_edits=["color", "scaling", "typography", "rotation", "alignment"],
+    role_constraints={
+        "headline": RoleConstraints(
+            palette_slots=["primary", "accent"],
+            can_rotate=True,
+            rotation_range=(-25, 25),
+            can_align=True,
+            alignment_positions=["center", "top-center", "bottom-center"],
+        ),
+    },
+    role_base_styles={
+        "headline": {"font_size_px": 64, "font_weight": "bold", "font_style": "normal",
+                     "letter_spacing": "normal", "is_heading": True,
+                     "default_alignment": "center"},
+    },
+    html_builder=_build_solo_headline,
+))
+
+
+# ---------------------------------------------------------------------------
+# Layout 7: quote_attribution — block quote with attribution
+#
+# Supports: color, scaling, typography. No rotation, no alignment.
+# Quote role defaults to italic, providing a natural typography-edit baseline
+# (italic -> normal) not present in other layouts.
+# ---------------------------------------------------------------------------
+
+def _build_quote_attribution(
+    contents: dict[str, str],
+    src_styles: dict[str, dict],
+    tgt_styles: dict[str, dict],
+    bg: str,
+) -> tuple[str, str]:
+    def _html(styles: dict[str, dict]) -> str:
+        body = (
+            f"margin:0; background:{bg}; display:flex; flex-direction:column;"
+            "justify-content:center; padding:64px 80px; height:100vh;"
+            "box-sizing:border-box;"
+        )
+        quote_css = _role_css(styles["quote"]) + "; line-height:1.5; max-width:720px"
+        attr_css = _role_css(styles["attribution"]) + "; margin-top:24px"
+        return (
+            f'<!DOCTYPE html><html><body style="{body}">'
+            f'<p style="{quote_css}">{contents["quote"]}</p>'
+            f'<p style="{attr_css}">\u2014 {contents["attribution"]}</p>'
+            f'</body></html>'
+        )
+    return _html(src_styles), _html(tgt_styles)
+
+
+register(LayoutDefinition(
+    name="quote_attribution",
+    roles=["quote", "attribution"],
+    supported_edits=["color", "scaling", "typography"],
+    role_constraints={
+        "quote":       RoleConstraints(palette_slots=["primary"]),
+        "attribution": RoleConstraints(palette_slots=["secondary", "accent"]),
+    },
+    role_base_styles={
+        "quote":       {"font_size_px": 48, "font_weight": "normal", "font_style": "italic",
+                        "letter_spacing": "normal", "is_heading": False},
+        "attribution": {"font_size_px": 30, "font_weight": "bold",   "font_style": "normal",
+                        "letter_spacing": "0.05em", "is_heading": False},
+    },
+    html_builder=_build_quote_attribution,
+))
+
+
+# ---------------------------------------------------------------------------
+# Layout 8: corner_badge — centered label with a corner-positioned badge
+#
+# Supports: color, scaling, typography, alignment.
+# Badge alignment uses four 2D corner positions (unique among layouts).
+# No rotation — badge text is short; rotation on it would be barely visible.
+# ---------------------------------------------------------------------------
+
+_BADGE_POS_CSS: dict[str, str] = {
+    "top-left":     "top:24px; left:24px",
+    "top-right":    "top:24px; right:24px",
+    "bottom-left":  "bottom:24px; left:24px",
+    "bottom-right": "bottom:24px; right:24px",
+}
+
+
+def _build_corner_badge(
+    contents: dict[str, str],
+    src_styles: dict[str, dict],
+    tgt_styles: dict[str, dict],
+    bg: str,
+) -> tuple[str, str]:
+    def _html(styles: dict[str, dict]) -> str:
+        body = (
+            f"margin:0; background:{bg}; position:relative; height:100vh;"
+            "display:flex; justify-content:center; align-items:center;"
+        )
+        label_css = _role_css(styles["label"]) + "; text-align:center"
+        badge_alignment = styles["badge"].get("alignment", "top-right")
+        pos_css = _BADGE_POS_CSS[badge_alignment]
+        badge_css = _role_css(styles["badge"]) + "; white-space:nowrap"
+        return (
+            f'<!DOCTYPE html><html><body style="{body}">'
+            f'<h1 style="{label_css}">{contents["label"]}</h1>'
+            f'<span style="position:absolute; {pos_css}; {badge_css}">'
+            f'{contents["badge"]}</span>'
+            f'</body></html>'
+        )
+    return _html(src_styles), _html(tgt_styles)
+
+
+register(LayoutDefinition(
+    name="corner_badge",
+    roles=["label", "badge"],
+    supported_edits=["color", "scaling", "typography", "alignment"],
+    role_constraints={
+        "label": RoleConstraints(palette_slots=["primary"]),
+        "badge": RoleConstraints(
+            palette_slots=["accent", "secondary"],
+            can_align=True,
+            alignment_positions=["top-left", "top-right", "bottom-left", "bottom-right"],
+        ),
+    },
+    role_base_styles={
+        "label": {"font_size_px": 56, "font_weight": "bold",   "font_style": "normal",
+                  "letter_spacing": "normal", "is_heading": True},
+        "badge": {"font_size_px": 30, "font_weight": "bold",   "font_style": "normal",
+                  "letter_spacing": "0.1em", "is_heading": False,
+                  "default_alignment": "top-right"},
+    },
+    html_builder=_build_corner_badge,
+))
+
+
+# ---------------------------------------------------------------------------
+# Layout 9: banner_caption — large top banner + bottom caption
+#
+# Supports: color, scaling, typography, rotation, alignment.
+# Banner sits at the top with plenty of vertical clearance — safe to rotate.
+# Caption at the bottom can shift left/center/right.
+# Inverted spatial logic compared to title_byline (top-heavy vs center+bottom).
+# ---------------------------------------------------------------------------
+
+_CAPTION_ALIGN_CSS: dict[str, str] = {
+    "left":   "text-align:left",
+    "center": "text-align:center",
+    "right":  "text-align:right",
+}
+
+
+def _build_banner_caption(
+    contents: dict[str, str],
+    src_styles: dict[str, dict],
+    tgt_styles: dict[str, dict],
+    bg: str,
+) -> tuple[str, str]:
+    def _html(styles: dict[str, dict]) -> str:
+        body = (
+            f"margin:0; background:{bg}; display:flex; flex-direction:column;"
+            "justify-content:space-between; height:100vh;"
+            "box-sizing:border-box; padding:60px 48px;"
+        )
+        banner_css = _role_css(styles["banner"]) + "; text-align:center"
+        caption_alignment = styles["caption"].get("alignment", "center")
+        align_css = _CAPTION_ALIGN_CSS[caption_alignment]
+        caption_css = _role_css(styles["caption"]) + f"; {align_css}"
+        return (
+            f'<!DOCTYPE html><html><body style="{body}">'
+            f'<h1 style="{banner_css}">{contents["banner"]}</h1>'
+            f'<p style="{caption_css}">{contents["caption"]}</p>'
+            f'</body></html>'
+        )
+    return _html(src_styles), _html(tgt_styles)
+
+
+register(LayoutDefinition(
+    name="banner_caption",
+    roles=["banner", "caption"],
+    supported_edits=["color", "scaling", "typography", "alignment"],
+    role_constraints={
+        "banner": RoleConstraints(
+            palette_slots=["primary", "accent"],
+        ),
+        "caption": RoleConstraints(
+            palette_slots=["secondary"],
+            can_align=True,
+            alignment_positions=["left", "center", "right"],
+        ),
+    },
+    role_base_styles={
+        "banner":  {"font_size_px": 72, "font_weight": "bold",   "font_style": "normal",
+                    "letter_spacing": "0.03em", "is_heading": True},
+        "caption": {"font_size_px": 30, "font_weight": "normal", "font_style": "normal",
+                    "letter_spacing": "normal", "is_heading": False,
+                    "default_alignment": "center"},
+    },
+    html_builder=_build_banner_caption,
+))
+
+
+# ---------------------------------------------------------------------------
+# Layout 10: two_column_heading — two side-by-side headings
+#
+# Supports: color, scaling, typography, rotation.
+# Both roles can rotate independently (each in its own flex cell).
+# This is the only layout with two rotation-capable roles, giving training
+# pairs where either element can be the rotation target.
+# No alignment — both elements are pinned to their cell centers.
+# ---------------------------------------------------------------------------
+
+def _build_two_column_heading(
+    contents: dict[str, str],
+    src_styles: dict[str, dict],
+    tgt_styles: dict[str, dict],
+    bg: str,
+) -> tuple[str, str]:
+    def _html(styles: dict[str, dict]) -> str:
+        body = f"margin:0; background:{bg}; display:flex; height:100vh;"
+        cell = (
+            "display:flex; flex:1; justify-content:center; align-items:center;"
+            "padding:40px; box-sizing:border-box;"
+        )
+        left_css = _role_css(styles["left_heading"]) + "; text-align:center"
+        right_css = _role_css(styles["right_heading"]) + "; text-align:center"
+        return (
+            f'<!DOCTYPE html><html><body style="{body}">'
+            f'<div style="{cell}">'
+            f'<span style="{left_css}">{contents["left_heading"]}</span>'
+            f'</div>'
+            f'<div style="{cell}">'
+            f'<span style="{right_css}">{contents["right_heading"]}</span>'
+            f'</div>'
+            f'</body></html>'
+        )
+    return _html(src_styles), _html(tgt_styles)
+
+
+register(LayoutDefinition(
+    name="two_column_heading",
+    roles=["left_heading", "right_heading"],
+    supported_edits=["color", "scaling", "typography", "rotation"],
+    role_constraints={
+        "left_heading":  RoleConstraints(
+            palette_slots=["primary"],
+            can_rotate=True,
+            rotation_range=(-20, 20),
+        ),
+        "right_heading": RoleConstraints(
+            palette_slots=["accent", "secondary"],
+            can_rotate=True,
+            rotation_range=(-20, 20),
+        ),
+    },
+    role_base_styles={
+        "left_heading":  {"font_size_px": 48, "font_weight": "bold",   "font_style": "normal",
+                          "letter_spacing": "normal", "is_heading": True},
+        "right_heading": {"font_size_px": 48, "font_weight": "bold",   "font_style": "normal",
+                          "letter_spacing": "normal", "is_heading": True},
+    },
+    html_builder=_build_two_column_heading,
 ))

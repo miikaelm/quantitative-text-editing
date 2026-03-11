@@ -121,13 +121,146 @@ SPLIT_PANEL: list[ContentSet] = [
 
 
 # ---------------------------------------------------------------------------
+# headline  (12 sets)
+# Single ALL-CAPS or title-case word/phrase. Short enough to render large.
+# ---------------------------------------------------------------------------
+SOLO_HEADLINE: list[ContentSet] = [
+    {"headline": "ILLUMINATE"},
+    {"headline": "MOMENTUM"},
+    {"headline": "ARISE"},
+    {"headline": "THRESHOLD"},
+    {"headline": "DIVERGE"},
+    {"headline": "RADIANT"},
+    {"headline": "CATALYST"},
+    {"headline": "OVERTURE"},
+    {"headline": "SIGNAL"},
+    {"headline": "FRACTURE"},
+    {"headline": "ASCENT"},
+    {"headline": "GRAVITY"},
+]
+
+
+# ---------------------------------------------------------------------------
+# quote + attribution  (12 sets)
+# Quote is a short pithy sentence. Attribution is a name (no "by" prefix —
+# the HTML builder adds the em dash). Neither is a substring of the other.
+# ---------------------------------------------------------------------------
+QUOTE_ATTRIBUTION: list[ContentSet] = [
+    {"quote": "Simplicity is the ultimate form of sophistication.",
+     "attribution": "Leonardo da Vinci"},
+    {"quote": "The details are not the details — they make the design.",
+     "attribution": "Charles Eames"},
+    {"quote": "Good design is as little design as possible.",
+     "attribution": "Dieter Rams"},
+    {"quote": "Every great design begins with an even better story.",
+     "attribution": "Lorinda Mamo"},
+    {"quote": "Design is thinking made visual.",
+     "attribution": "Saul Bass"},
+    {"quote": "Whitespace is to be regarded as an active element.",
+     "attribution": "Jan Tschichold"},
+    {"quote": "Perfection is achieved when there is nothing left to remove.",
+     "attribution": "Antoine de Saint-Exupéry"},
+    {"quote": "Color is a power which directly influences the soul.",
+     "attribution": "Wassily Kandinsky"},
+    {"quote": "Typography is the voice of the written word.",
+     "attribution": "Robert Bringhurst"},
+    {"quote": "A designer knows success when nothing more can be taken away.",
+     "attribution": "Paul Rand"},
+    {"quote": "Form ever follows function.",
+     "attribution": "Louis Sullivan"},
+    {"quote": "Less is more.",
+     "attribution": "Ludwig Mies van der Rohe"},
+]
+
+
+# ---------------------------------------------------------------------------
+# label + badge  (12 sets)
+# Labels are ALL-CAPS nouns. Badges are very short (≤ 10 chars), distinct
+# from the label, and not substrings of each other.
+# ---------------------------------------------------------------------------
+CORNER_BADGE: list[ContentSet] = [
+    {"label": "PREMIERE",    "badge": "NEW"},
+    {"label": "EDITION",     "badge": "Vol. 4"},
+    {"label": "COLLECTION",  "badge": "SOLD OUT"},
+    {"label": "SYMPOSIUM",   "badge": "LIVE"},
+    {"label": "JOURNAL",     "badge": "Issue 9"},
+    {"label": "EXHIBITION",  "badge": "FREE"},
+    {"label": "QUARTERLY",   "badge": "Q3"},
+    {"label": "WORKSHOP",    "badge": "FULL"},
+    {"label": "DISPATCH",    "badge": "DRAFT"},
+    {"label": "COMPENDIUM",  "badge": "BETA"},
+    {"label": "PORTFOLIO",   "badge": "2025"},
+    {"label": "ARCHIVE",     "badge": "v2.1"},
+]
+
+
+# ---------------------------------------------------------------------------
+# banner + caption  (12 sets)
+# Banner is a short bold phrase (all-caps or title case). Caption is a
+# single descriptive sentence. Neither is a substring of the other.
+# ---------------------------------------------------------------------------
+BANNER_CAPTION: list[ContentSet] = [
+    {"banner": "OPENING NIGHT",
+     "caption": "Doors open at 7 pm in the east atrium"},
+    {"banner": "ANNUAL REPORT",
+     "caption": "Fiscal year results across all operating divisions"},
+    {"banner": "GRAND OPENING",
+     "caption": "Join us for the ribbon cutting on Saturday morning"},
+    {"banner": "WORLD TOUR",
+     "caption": "Fourteen cities across six continents this season"},
+    {"banner": "PRODUCT LAUNCH",
+     "caption": "Available in stores and online from the first of March"},
+    {"banner": "SUMMER SERIES",
+     "caption": "Weekly outdoor screenings begin on the fifteenth"},
+    {"banner": "FINAL CALL",
+     "caption": "Registration closes at midnight on Friday"},
+    {"banner": "DEEP DIVE",
+     "caption": "A four-part exploration of modern infrastructure"},
+    {"banner": "FIELD NOTES",
+     "caption": "Observations collected over three months in the delta"},
+    {"banner": "MASTER CLASS",
+     "caption": "Six sessions with practitioners from across the field"},
+    {"banner": "NIGHT MARKET",
+     "caption": "Over forty vendors in the riverside district"},
+    {"banner": "YEAR IN REVIEW",
+     "caption": "Highlights and milestones from the past twelve months"},
+]
+
+
+# ---------------------------------------------------------------------------
+# left_heading + right_heading  (12 sets)
+# Both are short ALL-CAPS words or phrases. They must be distinct and
+# neither a substring of the other.
+# ---------------------------------------------------------------------------
+TWO_COLUMN_HEADING: list[ContentSet] = [
+    {"left_heading": "LIGHT",    "right_heading": "SHADOW"},
+    {"left_heading": "PUSH",     "right_heading": "PULL"},
+    {"left_heading": "ORDER",    "right_heading": "CHAOS"},
+    {"left_heading": "FORM",     "right_heading": "FUNCTION"},
+    {"left_heading": "EAST",     "right_heading": "WEST"},
+    {"left_heading": "SIGNAL",   "right_heading": "NOISE"},
+    {"left_heading": "MATTER",   "right_heading": "ENERGY"},
+    {"left_heading": "ORIGIN",   "right_heading": "TERMINUS"},
+    {"left_heading": "DIGITAL",  "right_heading": "ANALOG"},
+    {"left_heading": "TENSION",  "right_heading": "RELEASE"},
+    {"left_heading": "ABOVE",    "right_heading": "BELOW"},
+    {"left_heading": "FORWARD",  "right_heading": "BACK"},
+]
+
+
+# ---------------------------------------------------------------------------
 # Public registry — maps layout name → content pool
 # ---------------------------------------------------------------------------
 
 CONTENT_POOLS: dict[str, list[ContentSet]] = {
-    "title_subtitle": TITLE_SUBTITLE,
-    "title_byline":   TITLE_BYLINE,
-    "header_body":    HEADER_BODY,
-    "name_card":      NAME_CARD,
-    "split_panel":    SPLIT_PANEL,
+    "title_subtitle":    TITLE_SUBTITLE,
+    "title_byline":      TITLE_BYLINE,
+    "header_body":       HEADER_BODY,
+    "name_card":         NAME_CARD,
+    "split_panel":       SPLIT_PANEL,
+    "solo_headline":     SOLO_HEADLINE,
+    "quote_attribution": QUOTE_ATTRIBUTION,
+    "corner_badge":      CORNER_BADGE,
+    "banner_caption":    BANNER_CAPTION,
+    "two_column_heading": TWO_COLUMN_HEADING,
 }
