@@ -380,6 +380,137 @@ def _apply_edit_to_styles(
     return tgt
 
 
+def generate_l2_pairs_by_layout(
+    layout_name: str,
+    count: int,
+    seed: int | None = None,
+) -> list[EditPair]:
+    """
+    Generate `count` Level 2 EditPair objects for a specific layout, randomly
+    sampling edit types from the layout's supported_edits on each iteration.
+
+    Useful when adding a new layout and wanting to exercise all its edit types
+    in a single batch run.
+
+    Args:
+        layout_name: Name of the layout (e.g. "title_byline", "split_panel").
+        count:       Number of pairs to generate.
+        seed:        Optional RNG seed for reproducibility.
+
+    Returns:
+        List of EditPair objects ready for rendering via generate_pairs().
+    """
+    from gen_pipeline.l2.layouts import get_layout
+
+    rng = random.Random(seed)
+    layout: LayoutDefinition = get_layout(layout_name)
+
+    if not layout.supported_edits:
+        raise ValueError(f"Layout '{layout_name}' has no supported_edits")
+
+    pairs: list[EditPair] = []
+
+    for i in range(count):
+        edit_type = rng.choice(layout.supported_edits)
+        pair_id = f"{layout_name}_l2_{i + 1:03d}"
+
+        style_pkg: StylePackage = rng.choice(STYLE_PACKAGES)
+
+        content_pool = CONTENT_POOLS[layout.name]
+        contents: ContentSet = rng.choice(content_pool)
+
+        role_styles, role_slots = _resolve_base_styles(layout, style_pkg, rng)
+        bg = style_pkg.pick_background(rng)
+
+        if edit_type == "color":
+            editable = _editable_roles_color(layout)
+        elif edit_type == "scaling":
+            editable = _editable_roles_scaling(layout)
+        elif edit_type == "typography":
+            editable = _editable_roles_typography(layout)
+        elif edit_type == "rotation":
+            editable = _editable_roles_rotation(layout)
+        elif edit_type == "alignment":
+            editable = _editable_roles_alignment(layout)
+        else:
+            raise ValueError(f"Unsupported L2 edit type: '{edit_type}'")
+
+        if not editable:
+            continue
+
+        target_role = rng.choice(editable)
+        target_text = contents[target_role]
+
+        metadata: dict = {
+            "difficulty":      2,
+            "layout_type":     layout.name,
+            "style_package":   style_pkg.name,
+            "target_role":     target_role,
+            "all_roles":       list(layout.roles),
+            "role_contents":   dict(contents),
+            "background_css":  bg,
+            "background_type": classify_background(bg),
+            "text_content":    target_text,
+        }
+
+        if edit_type == "color":
+            old_hex, new_hex = _build_color_edit(target_role, role_styles, role_slots, style_pkg, rng)
+            target_styles = _apply_edit_to_styles(role_styles, target_role, "color", new_hex)
+            instruction = _make_color_instruction(target_role, target_text, new_hex, rng)
+            metadata.update({"property": "color", "old_value": old_hex, "new_value": new_hex})
+
+        elif edit_type == "scaling":
+            old_px, new_px = _build_scaling_edit(target_role, role_styles, rng)
+            target_styles = _apply_edit_to_styles(role_styles, target_role, "font_size_px", new_px)
+            instruction = _make_scaling_instruction(target_role, target_text, old_px, new_px, rng)
+            metadata.update({
+                "property": "font-size", "old_value": f"{old_px}px",
+                "new_value": f"{new_px}px", "scale_factor": round(new_px / old_px, 4),
+            })
+
+        elif edit_type == "typography":
+            subcategory, css_prop, old_v, new_v = _build_typography_edit(target_role, role_styles, rng)
+            style_key_map = {
+                "font_weight": "font_weight", "font_style": "font_style",
+                "letter_spacing": "letter_spacing", "font_family": "font_family",
+            }
+            target_styles = _apply_edit_to_styles(role_styles, target_role, style_key_map[subcategory], new_v)
+            instruction = _make_typography_instruction(target_role, target_text, subcategory, old_v, new_v, rng)
+            metadata.update({
+                "typography_subcategory": subcategory,
+                "property": css_prop, "old_value": old_v, "new_value": new_v,
+            })
+
+        elif edit_type == "rotation":
+            old_deg, new_deg = _build_rotation_edit(rng)
+            target_styles = _apply_edit_to_styles(role_styles, target_role, "rotation_deg", new_deg)
+            instruction = _make_rotation_instruction(target_role, target_text, old_deg, new_deg, rng)
+            metadata.update({
+                "property": "transform:rotate",
+                "old_value": f"{old_deg:.1f}deg", "new_value": f"{new_deg:.1f}deg",
+                "old_angle_deg": old_deg, "new_angle_deg": new_deg,
+            })
+
+        elif edit_type == "alignment":
+            old_pos, new_pos = _build_alignment_edit(target_role, role_styles, layout, rng)
+            target_styles = _apply_edit_to_styles(role_styles, target_role, "alignment", new_pos)
+            instruction = _make_alignment_instruction(target_role, target_text, new_pos, rng)
+            metadata.update({"property": "position", "old_value": old_pos, "new_value": new_pos})
+
+        source_html, target_html = layout.html_builder(contents, role_styles, target_styles, bg)
+
+        pairs.append(EditPair(
+            pair_id=pair_id,
+            edit_type=f"{edit_type}_l2",
+            source_html=source_html,
+            target_html=target_html,
+            instruction=instruction,
+            metadata=metadata,
+        ))
+
+    return pairs
+
+
 def generate_l2_pairs(
     edit_type: str,
     count: int,
