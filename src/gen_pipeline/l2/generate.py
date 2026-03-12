@@ -41,6 +41,19 @@ from gen_pipeline.l2.layouts import (
 )
 from gen_pipeline.l2.styles import STYLE_PACKAGES, StylePackage
 from gen_pipeline.l2.content import CONTENT_POOLS, ContentSet
+from gen_pipeline.l2.jitter import SceneJitter, sample_jitter, jitter_color
+
+
+# Minimum rendered font size (px). Enforced after jitter scaling.
+_MIN_FONT_PX = 30
+
+
+def _parse_em(value: str) -> float:
+    """Parse a CSS letter-spacing value like '0.05em' or 'normal' to float em."""
+    v = value.strip()
+    if v == "normal":
+        return 0.0
+    return float(v.replace("em", ""))
 
 
 # ---------------------------------------------------------------------------
@@ -51,13 +64,14 @@ def _resolve_base_styles(
     layout: LayoutDefinition,
     style_pkg: StylePackage,
     rng: random.Random,
+    jitter: SceneJitter,
 ) -> tuple[dict[str, dict], dict[str, str]]:
     """
-    Build a complete resolved style dict for each role.
+    Build a complete resolved style dict for each role, with jitter applied.
 
     Returns:
         role_styles:  {role: {color, font_size_px, font_weight, font_style,
-                               letter_spacing, font_family, [alignment]}}
+                               letter_spacing, line_height, font_family, [alignment]}}
         role_slots:   {role: palette_slot_name}  — which slot was picked for
                        each role's color (needed to find color-edit alternatives)
     """
@@ -68,10 +82,10 @@ def _resolve_base_styles(
         base = layout.role_base_styles[role]
         constraint = layout.role_constraints[role]
 
-        # Pick one palette slot for this role's color.
+        # Pick one palette slot for this role's color, then hue/lightness-jitter it.
         slot = rng.choice(constraint.palette_slots)
         role_slots[role] = slot
-        color = style_pkg.palette[slot]
+        color = jitter_color(style_pkg.palette[slot], jitter)
 
         font_family = style_pkg.font_heading if base.get("is_heading") else style_pkg.font_body
 
@@ -84,12 +98,25 @@ def _resolve_base_styles(
         else:
             source_weight = base_weight
 
+        # Font size: scale by jitter, clamp to minimum.
+        font_size_px = max(_MIN_FONT_PX, round(base["font_size_px"] * jitter.font_size_scale, 1))
+
+        # Letter spacing: shift by jitter delta, clamp to avoid character collapse.
+        base_ls = _parse_em(base.get("letter_spacing", "normal"))
+        ls = max(-0.01, base_ls + jitter.letter_spacing_delta)
+        letter_spacing = f"{ls:.3f}em"
+
+        # Line height: shift by jitter delta, clamp to a readable minimum.
+        base_lh = base.get("line_height", 1.4)
+        line_height = max(1.1, round(base_lh + jitter.line_height_delta, 2))
+
         style: dict = {
             "color":          color,
-            "font_size_px":   base["font_size_px"],
+            "font_size_px":   font_size_px,
             "font_weight":    source_weight,
             "font_style":     base["font_style"],
-            "letter_spacing": base.get("letter_spacing", "normal"),
+            "letter_spacing": letter_spacing,
+            "line_height":    line_height,
             "font_family":    font_family,
         }
 
@@ -127,16 +154,24 @@ def _build_color_edit(
     role_slots: dict[str, str],
     style_pkg: StylePackage,
     rng: random.Random,
+    jitter: SceneJitter,
 ) -> tuple[str, str]:
-    """Return (old_hex, new_hex) for a color edit on target_role."""
-    old_hex = role_styles[target_role]["color"]
+    """Return (old_hex, new_hex) for a color edit on target_role.
+
+    Both old and new are jitter-shifted so that the scene's hue/lightness
+    offset is consistent throughout the pair. The edit remains visually
+    distinct because alternatives are at 90°/180°/270° hue offsets from
+    the base, far larger than the ±25° jitter.
+    """
+    old_hex = role_styles[target_role]["color"]  # already jittered in _resolve_base_styles
     slot = role_slots[target_role]
     alternatives = style_pkg.edit_alternatives.get(slot, [])
-    # Filter out the current color to guarantee a visible change.
-    choices = [c for c in alternatives if c.upper() != old_hex.upper()]
+    # Filter out the current (pre-jitter) alternative to guarantee a visible change.
+    choices = [c for c in alternatives if c.upper() != style_pkg.palette[slot].upper()]
     if not choices:
         choices = alternatives or ["#000000"]
-    new_hex = rng.choice(choices)
+    raw_new = rng.choice(choices)
+    new_hex = jitter_color(raw_new, jitter)
     return old_hex, new_hex
 
 
@@ -161,9 +196,6 @@ _SCALING_FACTOR_LABELS = {
 
 def _editable_roles_scaling(layout: LayoutDefinition) -> list[str]:
     return layout.roles
-
-
-_MIN_FONT_PX = 30
 
 
 def _build_scaling_edit(
@@ -511,7 +543,8 @@ def generate_l2_pairs_by_layout(
         content_pool = CONTENT_POOLS[layout.name]
         contents: ContentSet = rng.choice(content_pool)
 
-        role_styles, role_slots = _resolve_base_styles(layout, style_pkg, rng)
+        jitter = sample_jitter(rng)
+        role_styles, role_slots = _resolve_base_styles(layout, style_pkg, rng, jitter)
         bg = style_pkg.pick_background(rng)
 
         if edit_type == "color":
@@ -546,7 +579,7 @@ def generate_l2_pairs_by_layout(
         }
 
         if edit_type == "color":
-            old_hex, new_hex = _build_color_edit(target_role, role_styles, role_slots, style_pkg, rng)
+            old_hex, new_hex = _build_color_edit(target_role, role_styles, role_slots, style_pkg, rng, jitter)
             target_styles = _apply_edit_to_styles(role_styles, target_role, "color", new_hex)
             instruction = _make_color_instruction(target_role, target_text, new_hex, rng)
             metadata.update({"property": "color", "old_value": old_hex, "new_value": new_hex})
@@ -590,7 +623,7 @@ def generate_l2_pairs_by_layout(
             instruction = _make_alignment_instruction(target_role, target_text, new_pos, rng, old_pos)
             metadata.update({"property": "position", "old_value": old_pos, "new_value": new_pos})
 
-        source_html, target_html = layout.html_builder(contents, role_styles, target_styles, bg)
+        source_html, target_html = layout.html_builder(contents, role_styles, target_styles, bg, jitter)
 
         pairs.append(EditPair(
             pair_id=pair_id,
@@ -639,8 +672,9 @@ def generate_l2_pairs(
         content_pool = CONTENT_POOLS[layout.name]
         contents: ContentSet = rng.choice(content_pool)
 
-        # 3. Resolve base styles (colors from palette, fonts from package, sizes from layout).
-        role_styles, role_slots = _resolve_base_styles(layout, style_pkg, rng)
+        # 3. Sample scene jitter and resolve base styles.
+        jitter = sample_jitter(rng)
+        role_styles, role_slots = _resolve_base_styles(layout, style_pkg, rng, jitter)
 
         # 4. Pick background.
         bg = style_pkg.pick_background(rng)
@@ -682,7 +716,7 @@ def generate_l2_pairs(
         }
 
         if edit_type == "color":
-            old_hex, new_hex = _build_color_edit(target_role, role_styles, role_slots, style_pkg, rng)
+            old_hex, new_hex = _build_color_edit(target_role, role_styles, role_slots, style_pkg, rng, jitter)
             target_styles = _apply_edit_to_styles(role_styles, target_role, "color", new_hex)
             instruction = _make_color_instruction(target_role, target_text, new_hex, rng)
             metadata.update({
@@ -744,7 +778,7 @@ def generate_l2_pairs(
             })
 
         # 7. Build HTML pair.
-        source_html, target_html = layout.html_builder(contents, role_styles, target_styles, bg)
+        source_html, target_html = layout.html_builder(contents, role_styles, target_styles, bg, jitter)
 
         pairs.append(EditPair(
             pair_id=pair_id,

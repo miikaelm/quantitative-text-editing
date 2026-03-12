@@ -22,6 +22,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
+from gen_pipeline.l2.jitter import SceneJitter
+
+
+def _px(base: float, scale: float, minimum: int = 4) -> str:
+    """Return a pixel value string scaled and clamped to a minimum."""
+    return f"{max(minimum, round(base * scale))}px"
+
 
 # ---------------------------------------------------------------------------
 # Data types
@@ -110,6 +117,9 @@ def _role_css(s: dict) -> str:
         f"letter-spacing:{s.get('letter_spacing', 'normal')}",
         "margin:0",
     ]
+    lh = s.get("line_height")
+    if lh is not None:
+        parts.append(f"line-height:{lh}")
     rot = s.get("rotation_deg", 0.0)
     if rot:
         parts.append(f"transform:rotate({rot:.1f}deg)")
@@ -131,12 +141,16 @@ def _build_title_subtitle(
     src_styles: dict[str, dict],
     tgt_styles: dict[str, dict],
     bg: str,
+    jitter: SceneJitter,
 ) -> tuple[str, str]:
+    pad = _px(40, jitter.container_padding_scale)
+    gap = _px(20, jitter.gap_scale)
+
     def _html(styles: dict[str, dict]) -> str:
         body = (
             f"margin:0; background:{bg}; display:flex; flex-direction:column;"
-            "justify-content:center; align-items:center; height:100vh; gap:20px;"
-            "box-sizing:border-box; padding:40px;"
+            f"justify-content:center; align-items:center; height:100vh; gap:{gap};"
+            f"box-sizing:border-box; padding:{pad};"
         )
         title_css = _role_css(styles["title"]) + "; text-align:center"
         subtitle_css = _role_css(styles["subtitle"]) + "; text-align:center"
@@ -186,6 +200,7 @@ def _build_title_byline(
     src_styles: dict[str, dict],
     tgt_styles: dict[str, dict],
     bg: str,
+    jitter: SceneJitter,
 ) -> tuple[str, str]:
     def _html(styles: dict[str, dict]) -> str:
         body = (
@@ -241,14 +256,18 @@ def _build_header_body(
     src_styles: dict[str, dict],
     tgt_styles: dict[str, dict],
     bg: str,
+    jitter: SceneJitter,
 ) -> tuple[str, str]:
+    pad = _px(56, jitter.container_padding_scale)
+    margin_bottom = _px(16, jitter.gap_scale)
+
     def _html(styles: dict[str, dict]) -> str:
         body = (
             f"margin:0; background:{bg}; display:flex; flex-direction:column;"
-            "justify-content:center; padding:56px; height:100vh; box-sizing:border-box;"
+            f"justify-content:center; padding:{pad}; height:100vh; box-sizing:border-box;"
         )
-        header_css = _role_css(styles["header"]) + "; margin-bottom:16px"
-        body_css = _role_css(styles["body"]) + "; line-height:1.6; max-width:680px"
+        header_css = _role_css(styles["header"]) + f"; margin-bottom:{margin_bottom}"
+        body_css = _role_css(styles["body"]) + "; max-width:680px"
         return (
             f'<!DOCTYPE html><html><body style="{body}">'
             f'<h2 style="{header_css}">{contents["header"]}</h2>'
@@ -268,7 +287,7 @@ register(LayoutDefinition(
     },
     role_base_styles={
         "header": {"font_size_px": 48, "font_weight": "bold",   "font_style": "normal", "letter_spacing": "normal", "is_heading": True},
-        "body":   {"font_size_px": 30, "font_weight": "normal", "font_style": "normal", "letter_spacing": "normal", "is_heading": False},
+        "body":   {"font_size_px": 30, "font_weight": "normal", "font_style": "normal", "letter_spacing": "normal", "is_heading": False, "line_height": 1.6},
     },
     html_builder=_build_header_body,
 ))
@@ -285,12 +304,16 @@ def _build_name_card(
     src_styles: dict[str, dict],
     tgt_styles: dict[str, dict],
     bg: str,
+    jitter: SceneJitter,
 ) -> tuple[str, str]:
+    pad = _px(40, jitter.container_padding_scale)
+    gap = _px(10, jitter.gap_scale)
+
     def _html(styles: dict[str, dict]) -> str:
         body = (
             f"margin:0; background:{bg}; display:flex; flex-direction:column;"
-            "justify-content:center; align-items:center; height:100vh; gap:10px;"
-            "box-sizing:border-box; padding:40px;"
+            f"justify-content:center; align-items:center; height:100vh; gap:{gap};"
+            f"box-sizing:border-box; padding:{pad};"
         )
         name_css = _role_css(styles["name"]) + "; text-align:center"
         job_css = _role_css(styles["job_title"]) + "; text-align:center"
@@ -345,7 +368,10 @@ def _build_split_panel(
     src_styles: dict[str, dict],
     tgt_styles: dict[str, dict],
     bg: str,
+    jitter: SceneJitter,
 ) -> tuple[str, str]:
+    panel_pad = _px(40, jitter.container_padding_scale)
+
     def _html(styles: dict[str, dict]) -> str:
         body = f"margin:0; background:{bg}; display:flex; height:100vh;"
         label_css = _role_css(styles["label"]) + "; text-align:center"
@@ -354,12 +380,12 @@ def _build_split_panel(
         descriptor_css = _role_css(styles["descriptor"])
         # Left panel: centered, slightly darker surface
         left_panel = (
-            'display:flex; flex:1; justify-content:center; align-items:center;'
-            'padding:40px; box-sizing:border-box;'
+            f'display:flex; flex:1; justify-content:center; align-items:center;'
+            f'padding:{panel_pad}; box-sizing:border-box;'
         )
         right_panel = (
             f'display:flex; flex:1; {desc_align_css};'
-            'padding:40px; box-sizing:border-box;'
+            f'padding:{panel_pad}; box-sizing:border-box;'
         )
         return (
             f'<!DOCTYPE html><html><body style="{body}">'
@@ -420,6 +446,7 @@ def _build_solo_headline(
     src_styles: dict[str, dict],
     tgt_styles: dict[str, dict],
     bg: str,
+    jitter: SceneJitter,
 ) -> tuple[str, str]:
     def _html(styles: dict[str, dict]) -> str:
         alignment = styles["headline"].get("alignment", "center")
@@ -476,15 +503,20 @@ def _build_quote_attribution(
     src_styles: dict[str, dict],
     tgt_styles: dict[str, dict],
     bg: str,
+    jitter: SceneJitter,
 ) -> tuple[str, str]:
+    pad_v = _px(64, jitter.container_padding_scale)
+    pad_h = _px(80, jitter.container_padding_scale)
+    margin_top = _px(24, jitter.gap_scale)
+
     def _html(styles: dict[str, dict]) -> str:
         body = (
             f"margin:0; background:{bg}; display:flex; flex-direction:column;"
-            "justify-content:center; padding:64px 80px; height:100vh;"
+            f"justify-content:center; padding:{pad_v} {pad_h}; height:100vh;"
             "box-sizing:border-box;"
         )
-        quote_css = _role_css(styles["quote"]) + "; line-height:1.5; max-width:720px"
-        attr_css = _role_css(styles["attribution"]) + "; margin-top:24px"
+        quote_css = _role_css(styles["quote"]) + "; max-width:720px"
+        attr_css = _role_css(styles["attribution"]) + f"; margin-top:{margin_top}"
         return (
             f'<!DOCTYPE html><html><body style="{body}">'
             f'<p style="{quote_css}">{contents["quote"]}</p>'
@@ -504,7 +536,7 @@ register(LayoutDefinition(
     },
     role_base_styles={
         "quote":       {"font_size_px": 48, "font_weight": "normal", "font_style": "italic",
-                        "letter_spacing": "normal", "is_heading": False},
+                        "letter_spacing": "normal", "is_heading": False, "line_height": 1.5},
         "attribution": {"font_size_px": 30, "font_weight": "bold",   "font_style": "normal",
                         "letter_spacing": "0.05em", "is_heading": False},
     },
@@ -533,6 +565,7 @@ def _build_corner_badge(
     src_styles: dict[str, dict],
     tgt_styles: dict[str, dict],
     bg: str,
+    jitter: SceneJitter,
 ) -> tuple[str, str]:
     def _html(styles: dict[str, dict]) -> str:
         body = (
@@ -597,12 +630,16 @@ def _build_banner_caption(
     src_styles: dict[str, dict],
     tgt_styles: dict[str, dict],
     bg: str,
+    jitter: SceneJitter,
 ) -> tuple[str, str]:
+    pad_v = _px(60, jitter.container_padding_scale)
+    pad_h = _px(48, jitter.container_padding_scale)
+
     def _html(styles: dict[str, dict]) -> str:
         body = (
             f"margin:0; background:{bg}; display:flex; flex-direction:column;"
             "justify-content:space-between; height:100vh;"
-            "box-sizing:border-box; padding:60px 48px;"
+            f"box-sizing:border-box; padding:{pad_v} {pad_h};"
         )
         banner_css = _role_css(styles["banner"]) + "; text-align:center"
         caption_alignment = styles["caption"].get("alignment", "center")
@@ -657,12 +694,15 @@ def _build_two_column_heading(
     src_styles: dict[str, dict],
     tgt_styles: dict[str, dict],
     bg: str,
+    jitter: SceneJitter,
 ) -> tuple[str, str]:
+    cell_pad = _px(40, jitter.container_padding_scale)
+
     def _html(styles: dict[str, dict]) -> str:
         body = f"margin:0; background:{bg}; display:flex; height:100vh;"
         cell = (
-            "display:flex; flex:1; justify-content:center; align-items:center;"
-            "padding:40px; box-sizing:border-box;"
+            f"display:flex; flex:1; justify-content:center; align-items:center;"
+            f"padding:{cell_pad}; box-sizing:border-box;"
         )
         left_css = _role_css(styles["left_heading"]) + "; text-align:center"
         right_css = _role_css(styles["right_heading"]) + "; text-align:center"
