@@ -216,18 +216,35 @@ def deduplicate_pool(pool: list[dict[str, str]]) -> list[dict[str, str]]:
 # Generation via OpenAI API
 # ---------------------------------------------------------------------------
 
-def build_prompt(layout_name: str, schema: dict, batch_size: int = 25) -> str:
-    """Build the generation prompt for a layout type."""
+# Domain categories for stratified generation.
+# Each batch is assigned a domain to keep the pool diverse across topics.
+_DOMAINS = [
+    "science and technology",
+    "creative arts and culture",
+    "commerce and finance",
+    "nature and environment",
+    "sports and fitness",
+]
+
+
+def build_prompt(layout_name: str, schema: dict, batch_size: int = 25, domain: str | None = None) -> str:
+    """Build the generation prompt for a layout type, optionally scoped to a domain."""
     roles_desc = "\n".join(
         f'  - "{role}": {desc}' for role, desc in schema["roles"].items()
     )
     examples_json = json.dumps(schema["examples"], indent=2)
 
+    domain_instruction = (
+        f"\nDOMAIN FOCUS: All {batch_size} sets in this batch should be themed around "
+        f'"{domain}". Stay within this domain while still following all constraints.\n'
+        if domain else ""
+    )
+
     return f"""Generate exactly {batch_size} content sets for a layout type called "{layout_name}".
 
 Each content set is a JSON object with these roles:
 {roles_desc}
-
+{domain_instruction}
 HARD CONSTRAINTS (sets that violate these will be rejected):
 1. All string values within a single set must be completely distinct.
 2. No string value may be a substring of another string value in the same set (case-insensitive). For example, if one value is "FORM" and another is "FUNCTION", that is NOT allowed because... actually wait, "FORM" is not contained in "FUNCTION". But "ART" would be contained in "ARTIST", so that pair is forbidden.
@@ -249,9 +266,10 @@ def generate_batch(
     batch_size: int = 25,
     model: str = "gpt-4.1-mini",
     max_retries: int = 3,
+    domain: str | None = None,
 ) -> list[dict[str, str]]:
     """Generate one batch of content sets via the OpenAI API."""
-    prompt = build_prompt(layout_name, schema, batch_size)
+    prompt = build_prompt(layout_name, schema, batch_size, domain=domain)
 
     for attempt in range(max_retries):
         try:
@@ -327,9 +345,11 @@ def generate_pool(
         current_batch_size = min(batch_size, remaining + 10)  # Generate a few extra for rejections
 
         batches += 1
-        print(f"  Batch {batches}: requesting {current_batch_size} sets...")
+        # Cycle through domains to ensure even domain coverage across batches.
+        domain = _DOMAINS[(batches - 1) % len(_DOMAINS)]
+        print(f"  Batch {batches} [{domain}]: requesting {current_batch_size} sets...")
 
-        batch = generate_batch(client, layout_name, schema, current_batch_size, model)
+        batch = generate_batch(client, layout_name, schema, current_batch_size, model, domain=domain)
         total_generated += len(batch)
 
         # Validate each set

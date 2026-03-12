@@ -75,10 +75,19 @@ def _resolve_base_styles(
 
         font_family = style_pkg.font_heading if base.get("is_heading") else style_pkg.font_body
 
+        # Randomly vary source font_weight (35% chance) for training diversity.
+        # Covers bold→normal, normal→bold, light→bold, black→normal, etc.
+        base_weight = base["font_weight"]
+        if rng.random() < 0.35:
+            alt_weights = [w for w in ["300", "normal", "bold", "900"] if w != base_weight]
+            source_weight = rng.choice(alt_weights)
+        else:
+            source_weight = base_weight
+
         style: dict = {
             "color":          color,
             "font_size_px":   base["font_size_px"],
-            "font_weight":    base["font_weight"],
+            "font_weight":    source_weight,
             "font_style":     base["font_style"],
             "letter_spacing": base.get("letter_spacing", "normal"),
             "font_family":    font_family,
@@ -88,6 +97,16 @@ def _resolve_base_styles(
         # source image varies and the edit target is always distinct from it.
         if constraint.can_align:
             style["alignment"] = rng.choice(constraint.alignment_positions)
+
+        # Add text-shadow to ~20% of roles for visual variety.
+        if rng.random() < 0.20:
+            style["text_shadow"] = rng.choice([
+                "2px 2px 4px rgba(0,0,0,0.3)",
+                "1px 1px 0px rgba(0,0,0,0.5)",
+                "0px 2px 6px rgba(0,0,0,0.4)",
+                "3px 3px 8px rgba(0,0,0,0.25)",
+                "1px 1px 2px rgba(0,0,0,0.6)",
+            ])
 
         role_styles[role] = style
 
@@ -215,7 +234,11 @@ def _build_typography_edit(
 
     if subcategory == "font_weight":
         current = role_styles[target_role]["font_weight"]
-        old_v, new_v = ("bold", "normal") if current == "bold" else ("normal", "bold")
+        # Treat any heavy weight (bold/700/800/900) as → normal; anything else as → bold.
+        if current in ("bold", "700", "800", "900"):
+            old_v, new_v = current, "normal"
+        else:
+            old_v, new_v = current, "bold"
         return "font_weight", "font-weight", old_v, new_v
 
     if subcategory == "font_style":
@@ -286,6 +309,8 @@ def _make_typography_instruction(
 # ---------------------------------------------------------------------------
 
 _ROTATION_ANGLES = [-30, -25, -20, -15, -10, 10, 15, 20, 25, 30]
+# Source can start at 0 (upright) or any non-zero angle.
+_ROTATION_SOURCE_ANGLES = [0, -30, -25, -20, -15, -10, 10, 15, 20, 25, 30]
 
 
 def _editable_roles_rotation(layout: LayoutDefinition) -> list[str]:
@@ -293,9 +318,11 @@ def _editable_roles_rotation(layout: LayoutDefinition) -> list[str]:
 
 
 def _build_rotation_edit(rng: random.Random) -> tuple[float, float]:
-    """Return (old_deg=0.0, new_deg) — source is always upright."""
-    new_deg = float(rng.choice(_ROTATION_ANGLES))
-    return 0.0, new_deg
+    """Return (old_deg, new_deg). Source sampled from full angle pool (including 0); old ≠ new."""
+    old_deg = float(rng.choice(_ROTATION_SOURCE_ANGLES))
+    target_candidates = [a for a in _ROTATION_ANGLES if float(a) != old_deg]
+    new_deg = float(rng.choice(target_candidates))
+    return old_deg, new_deg
 
 
 def _make_rotation_instruction(
@@ -305,11 +332,28 @@ def _make_rotation_instruction(
     new_deg: float,
     rng: random.Random,
 ) -> str:
+    role_ref = target_role.replace("_", " ")
+    text_ref = f"'{target_text}'"
+    ref = role_ref if rng.random() < 0.5 else text_ref
+
+    if new_deg == 0.0:
+        # Straighten instruction
+        return f"Straighten the {ref}" if ref == role_ref else f"Straighten {ref}"
+
     abs_deg = abs(new_deg)
     direction = "clockwise" if new_deg > 0 else "counterclockwise"
-    if rng.random() < 0.5:
-        return f"Rotate the {target_role.replace('_', ' ')} {abs_deg:.0f} degrees {direction}"
-    return f"Rotate '{target_text}' {abs_deg:.0f} degrees {direction}"
+
+    if old_deg == 0.0:
+        # Simple rotation from upright
+        if ref == role_ref:
+            return f"Rotate the {ref} {abs_deg:.0f} degrees {direction}"
+        return f"Rotate {ref} {abs_deg:.0f} degrees {direction}"
+    else:
+        # Non-zero source — use absolute target to avoid ambiguity
+        deg_str = f"{new_deg:.0f}" if new_deg == int(new_deg) else f"{new_deg:.1f}"
+        if ref == role_ref:
+            return f"Set the rotation of the {ref} to {deg_str} degrees"
+        return f"Set the rotation of {ref} to {deg_str} degrees"
 
 
 # ---------------------------------------------------------------------------
@@ -338,23 +382,41 @@ def _build_alignment_edit(
 
 _ALIGNMENT_HUMAN: dict[str, str] = {
     # split_panel vertical positions
-    "top":              "top",
-    "center":           "center",
-    "bottom":           "bottom",
+    "top":           "top",
+    "center":        "center",
+    "bottom":        "bottom",
     # title_byline / banner_caption horizontal positions
-    "bottom-left":      "bottom-left corner",
-    "bottom-center":    "bottom center",
-    "bottom-right":     "bottom-right corner",
-    # solo_headline vertical positions
-    "top-center":       "top center",
-    "bottom-center":    "bottom center",
-    # corner_badge corner positions
-    "top-left":         "top-left corner",
-    "top-right":        "top-right corner",
+    "bottom-left":   "bottom-left corner",
+    "bottom-center": "bottom center",
+    "bottom-right":  "bottom-right corner",
+    # solo_headline full 3×3 grid
+    "top-left":      "top-left corner",
+    "top-center":    "top center",
+    "top-right":     "top-right corner",
+    "center-left":   "left center",
+    "center-right":  "right center",
+    "bottom-left":   "bottom-left corner",
+    "bottom-center": "bottom center",
+    "bottom-right":  "bottom-right corner",
+    # corner_badge corner positions (same keys, covered above)
     # banner_caption caption text-alignment
-    "left":             "left",
-    "right":            "right",
+    "left":  "left",
+    "right": "right",
 }
+
+# Relative direction labels used when one axis is preserved.
+_RELATIVE_H: dict[str, str] = {"left": "left", "center": "center", "right": "right"}
+_RELATIVE_V: dict[str, str] = {"top": "top", "center": "center", "bottom": "bottom"}
+
+
+def _split_position(pos: str) -> tuple[str | None, str | None]:
+    """Split 'vertical-horizontal' into (v, h). Returns (None, None) if unparseable."""
+    if pos == "center":
+        return "center", "center"
+    parts = pos.split("-", 1)
+    if len(parts) == 2 and parts[0] in _RELATIVE_V and parts[1] in _RELATIVE_H:
+        return parts[0], parts[1]
+    return None, None
 
 
 def _make_alignment_instruction(
@@ -362,11 +424,32 @@ def _make_alignment_instruction(
     target_text: str,
     new_pos: str,
     rng: random.Random,
+    old_pos: str | None = None,
 ) -> str:
+    role_ref = target_role.replace("_", " ")
+    text_ref = f"'{target_text}'"
+    ref = role_ref if rng.random() < 0.5 else text_ref
+
+    # Attempt relative instruction (~30% of the time) when positions share one axis.
+    if old_pos is not None and rng.random() < 0.30:
+        old_v, old_h = _split_position(old_pos)
+        new_v, new_h = _split_position(new_pos)
+        if None not in (old_v, old_h, new_v, new_h):
+            if old_v == new_v and old_h != new_h:
+                # Only horizontal axis changes — say "align left/right/center"
+                direction = _RELATIVE_H[new_h]
+                action = f"Align {ref} to the {direction}" if ref == text_ref else f"Align the {ref} to the {direction}"
+                return action
+            if old_h == new_h and old_v != new_v:
+                # Only vertical axis changes
+                direction = _RELATIVE_V[new_v]
+                action = f"Move {ref} to the {direction}" if ref == text_ref else f"Move the {ref} to the {direction}"
+                return action
+
     pos_human = _ALIGNMENT_HUMAN.get(new_pos, new_pos)
-    if rng.random() < 0.5:
-        return f"Move the {target_role.replace('_', ' ')} to the {pos_human}"
-    return f"Move '{target_text}' to the {pos_human}"
+    if ref == role_ref:
+        return f"Move the {ref} to the {pos_human}"
+    return f"Move {ref} to the {pos_human}"
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +575,7 @@ def generate_l2_pairs_by_layout(
 
         elif edit_type == "rotation":
             old_deg, new_deg = _build_rotation_edit(rng)
+            role_styles[target_role]["rotation_deg"] = old_deg  # Apply source rotation to source HTML
             target_styles = _apply_edit_to_styles(role_styles, target_role, "rotation_deg", new_deg)
             instruction = _make_rotation_instruction(target_role, target_text, old_deg, new_deg, rng)
             metadata.update({
@@ -503,7 +587,7 @@ def generate_l2_pairs_by_layout(
         elif edit_type == "alignment":
             old_pos, new_pos = _build_alignment_edit(target_role, role_styles, layout, rng)
             target_styles = _apply_edit_to_styles(role_styles, target_role, "alignment", new_pos)
-            instruction = _make_alignment_instruction(target_role, target_text, new_pos, rng)
+            instruction = _make_alignment_instruction(target_role, target_text, new_pos, rng, old_pos)
             metadata.update({"property": "position", "old_value": old_pos, "new_value": new_pos})
 
         source_html, target_html = layout.html_builder(contents, role_styles, target_styles, bg)
@@ -638,6 +722,7 @@ def generate_l2_pairs(
 
         elif edit_type == "rotation":
             old_deg, new_deg = _build_rotation_edit(rng)
+            role_styles[target_role]["rotation_deg"] = old_deg  # Apply source rotation to source HTML
             target_styles = _apply_edit_to_styles(role_styles, target_role, "rotation_deg", new_deg)
             instruction = _make_rotation_instruction(target_role, target_text, old_deg, new_deg, rng)
             metadata.update({
@@ -651,7 +736,7 @@ def generate_l2_pairs(
         elif edit_type == "alignment":
             old_pos, new_pos = _build_alignment_edit(target_role, role_styles, layout, rng)
             target_styles = _apply_edit_to_styles(role_styles, target_role, "alignment", new_pos)
-            instruction = _make_alignment_instruction(target_role, target_text, new_pos, rng)
+            instruction = _make_alignment_instruction(target_role, target_text, new_pos, rng, old_pos)
             metadata.update({
                 "property":  "position",
                 "old_value": old_pos,

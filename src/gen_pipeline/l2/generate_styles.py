@@ -152,48 +152,264 @@ def generate_edit_alternatives(palette: dict[str, str], rng: random.Random) -> d
     return alts
 
 
+def _pick_tier(rng: random.Random) -> str:
+    """Pick a contrast tier: subtle (pastel), moderate, or bold (vivid/dark)."""
+    return rng.choices(["subtle", "moderate", "bold"], weights=[0.40, 0.35, 0.25])[0]
+
+
+def _solid_color(rng: random.Random, base_h: float, tier: str, hue_shift: float = 0.0) -> str:
+    """A solid hex color whose saturation/lightness fits the contrast tier."""
+    hue = rotate_hue(base_h, hue_shift + rng.uniform(-20, 20))
+    if tier == "subtle":
+        s = rng.uniform(0.05, 0.35)
+        lit = rng.uniform(0.78, 0.97)
+    elif tier == "moderate":
+        s = rng.uniform(0.35, 0.70)
+        lit = rng.uniform(0.35, 0.78)
+    else:  # bold
+        s = rng.uniform(0.65, 1.00)
+        lit = rng.uniform(0.08, 0.62)
+    return hsl_to_hex(hue, clamp(s), clamp(lit))
+
+
+def _line_opacity(rng: random.Random, tier: str) -> float:
+    """Opacity for rgba line/overlay patterns, scaled to tier."""
+    if tier == "subtle":
+        return round(rng.uniform(0.05, 0.18), 2)
+    elif tier == "moderate":
+        return round(rng.uniform(0.22, 0.55), 2)
+    else:  # bold
+        return round(rng.uniform(0.60, 1.00), 2)
+
+
+def _complex_pattern_options(
+    bg: str,
+    primary: str,
+    accent: str,
+    rng: random.Random,
+) -> list[str]:
+    """
+    Return a list of complex CSS pattern strings using multi-layer gradients.
+    Each pattern independently picks a contrast tier (subtle / moderate / bold).
+    """
+    bg_h, bg_s, bg_l = hex_to_hsl(bg)
+    pr, pg, pb = hex_to_rgb_tuple(primary)
+    ar, ag, ab = hex_to_rgb_tuple(accent)
+
+    patterns: list[str] = []
+
+    # ── Checkerboard (repeating-conic-gradient, two solid hex colors) ──────
+    tier = _pick_tier(rng)
+    size = rng.choice([20, 28, 36, 44])
+    hue_shift2 = rng.uniform(30, 120) if tier == "bold" else rng.uniform(10, 40)
+    c1 = _solid_color(rng, bg_h, tier, hue_shift=0.0)
+    c2 = _solid_color(rng, bg_h, tier, hue_shift=hue_shift2)
+    patterns.append(
+        f"repeating-conic-gradient({c1} 0% 25%, {c2} 0% 50%) 0 0 / {size}px {size}px"
+    )
+
+    # ── Crosshatch (two repeating-linear-gradient layers at 45°/135°) ─────
+    tier = _pick_tier(rng)
+    spacing = rng.choice([16, 20, 24, 32])
+    thickness = rng.choice([2, 3, 4]) if tier == "bold" else rng.choice([1, 1, 2])
+    op = _line_opacity(rng, tier)
+    patterns.append(
+        f"repeating-linear-gradient(45deg, rgba({pr},{pg},{pb},{op}) 0,"
+        f" rgba({pr},{pg},{pb},{op}) {thickness}px,"
+        f" transparent {thickness}px, transparent {spacing}px) 0 0 / {spacing}px {spacing}px,"
+        f" repeating-linear-gradient(135deg, rgba({pr},{pg},{pb},{op}) 0,"
+        f" rgba({pr},{pg},{pb},{op}) {thickness}px,"
+        f" transparent {thickness}px, transparent {spacing}px) 0 0 / {spacing}px {spacing}px,"
+        f" {bg}"
+    )
+
+    # ── Grid lines (horizontal + vertical) ────────────────────────────────
+    tier = _pick_tier(rng)
+    grid_spacing = rng.choice([20, 28, 36, 48])
+    grid_thickness = rng.choice([2, 3, 4]) if tier == "bold" else rng.choice([1, 1, 2])
+    op = _line_opacity(rng, tier)
+    patterns.append(
+        f"repeating-linear-gradient(0deg, rgba({ar},{ag},{ab},{op}) 0,"
+        f" rgba({ar},{ag},{ab},{op}) {grid_thickness}px,"
+        f" transparent {grid_thickness}px, transparent {grid_spacing}px) 0 0 / {grid_spacing}px {grid_spacing}px,"
+        f" repeating-linear-gradient(90deg, rgba({ar},{ag},{ab},{op}) 0,"
+        f" rgba({ar},{ag},{ab},{op}) {grid_thickness}px,"
+        f" transparent {grid_thickness}px, transparent {grid_spacing}px) 0 0 / {grid_spacing}px {grid_spacing}px,"
+        f" {bg}"
+    )
+
+    # ── Offset dots / honeycomb-like (solid hex dots, correct CSS tiling) ─
+    tier = _pick_tier(rng)
+    sx = rng.choice([20, 24, 30, 36])
+    dot_r = rng.choice([3, 5, 7, 9]) if tier == "bold" else rng.choice([2, 3, 4, 5])
+    dot_color = _solid_color(rng, bg_h, tier, hue_shift=rng.uniform(-40, 40))
+    patterns.append(
+        f"radial-gradient(circle, {dot_color} {dot_r}px, transparent {dot_r}px) 0 0 / {sx}px {sx}px,"
+        f" radial-gradient(circle, {dot_color} {dot_r}px, transparent {dot_r}px) {sx // 2}px {sx // 2}px / {sx}px {sx}px,"
+        f" {bg}"
+    )
+
+    # ── Diamond / argyle ───────────────────────────────────────────────────
+    tier = _pick_tier(rng)
+    half = rng.choice([12, 16, 20, 24])
+    border = rng.choice([2, 3, 4]) if tier == "bold" else rng.choice([1, 2])
+    op = _line_opacity(rng, tier)
+    patterns.append(
+        f"repeating-linear-gradient(45deg, rgba({pr},{pg},{pb},{op}) 0,"
+        f" rgba({pr},{pg},{pb},{op}) {border}px,"
+        f" transparent {border}px, transparent {half}px),"
+        f" repeating-linear-gradient(-45deg, rgba({ar},{ag},{ab},{op}) 0,"
+        f" rgba({ar},{ag},{ab},{op}) {border}px,"
+        f" transparent {border}px, transparent {half}px),"
+        f" {bg}"
+    )
+
+    # ── Zigzag / herringbone ───────────────────────────────────────────────
+    tier = _pick_tier(rng)
+    zz = rng.choice([10, 14, 18, 22])
+    zz_border = rng.choice([2, 3, 4]) if tier == "bold" else rng.choice([1, 2])
+    op = _line_opacity(rng, tier)
+    patterns.append(
+        f"repeating-linear-gradient(135deg, rgba({pr},{pg},{pb},{op}) 0,"
+        f" rgba({pr},{pg},{pb},{op}) {zz_border}px,"
+        f" transparent {zz_border}px, transparent {zz}px),"
+        f" repeating-linear-gradient(45deg, rgba({pr},{pg},{pb},{op}) 0,"
+        f" rgba({pr},{pg},{pb},{op}) {zz_border}px,"
+        f" transparent {zz_border}px, transparent {zz}px),"
+        f" {bg}"
+    )
+
+    return patterns
+
+
 def generate_background_options(palette: dict[str, str], rng: random.Random) -> list[str]:
-    """Generate 7-9 background options: solids, gradients, image overlay."""
+    """
+    Generate 18-24 background options covering:
+      - 2 solid colours
+      - 3-4 two-stop linear gradients (palette hues, varied angles)
+      - 1-2 multi-stop linear gradients (3-5 stops)
+      - 1-2 cross-palette gradients (primary → accent or secondary)
+      - 1-2 radial gradients
+      - 1-2 repeating-linear-gradient (simple stripe patterns)
+      - 1   repeating-radial-gradient (dot grid)
+      - 0-1 conic gradient
+      - 2-4 complex CSS patterns (checkerboard, crosshatch, grid, offset-dots, diamond, zigzag)
+      - 5-8 image overlays with varied opacity (0.10–0.75, sometimes near-transparent)
+    """
     bg = palette["background"]
     bg_h, bg_s, bg_l = hex_to_hsl(bg)
     primary = palette["primary"]
+    accent = palette["accent"]
+    secondary = palette["secondary"]
 
     options: list[str] = []
 
-    # 2 solid colors
+    # ── 2 solid colours ───────────────────────────────────────────────────
     options.append(bg)
     alt_solid = hsl_to_hex(bg_h, clamp(bg_s + 0.03), clamp(bg_l - 0.02, 0.90, 0.97))
     options.append(alt_solid)
 
-    # 5-6 gradients
-    num_grads = rng.randint(5, 6)
-    gradient_angles = rng.sample([90, 120, 135, 150, 160, 180, 200, 225, 270, 315], num_grads)
-    for angle in gradient_angles:
-        hue_shift = rng.uniform(-30, 30)
-        start_h = rotate_hue(bg_h, hue_shift)
-        end_h = rotate_hue(bg_h, hue_shift + rng.uniform(10, 40))
-        start_s = clamp(bg_s + rng.uniform(0.05, 0.20), 0.05, 0.40)
-        end_s = clamp(bg_s + rng.uniform(0.10, 0.35), 0.10, 0.50)
-        start_l = clamp(bg_l - rng.uniform(0.0, 0.05), 0.85, 0.97)
-        end_l = clamp(bg_l - rng.uniform(0.05, 0.15), 0.75, 0.92)
+    all_angles = [45, 60, 90, 120, 135, 150, 160, 180, 200, 225, 240, 270, 300, 315]
 
-        c1 = hsl_to_hex(start_h, start_s, start_l)
-        c2 = hsl_to_hex(end_h, end_s, end_l)
+    # ── 3-4 two-stop linear gradients (tier-aware) ────────────────────────
+    num_two_stop = rng.randint(3, 4)
+    chosen_angles = rng.sample(all_angles, num_two_stop)
+    for angle in chosen_angles:
+        tier = _pick_tier(rng)
+        hue_shift = rng.uniform(30, 120) if tier == "bold" else rng.uniform(-30, 30)
+        c1 = _solid_color(rng, bg_h, tier, hue_shift=0.0)
+        c2 = _solid_color(rng, bg_h, tier, hue_shift=hue_shift)
+        options.append(f"linear-gradient({angle}deg, {c1} 0%, {c2} 100%)")
 
-        if rng.random() < 0.2:  # 20% chance radial
-            pos = rng.choice(["center", "top", "bottom", "top left", "bottom right"])
-            options.append(f"radial-gradient(ellipse at {pos}, {c1} 0%, {c2} 100%)")
+    # ── 1-2 multi-stop linear gradients (3-5 colour stops, tier-aware) ────
+    for _ in range(rng.randint(1, 2)):
+        tier = _pick_tier(rng)
+        num_stops = rng.randint(3, 5)
+        angle = rng.choice(all_angles)
+        stops = []
+        for k in range(num_stops):
+            pct = round(k * 100 / (num_stops - 1))
+            shift = k * (rng.uniform(30, 90) if tier == "bold" else rng.uniform(10, 40))
+            stops.append(f"{_solid_color(rng, bg_h, tier, hue_shift=shift)} {pct}%")
+        options.append(f"linear-gradient({angle}deg, {', '.join(stops)})")
+
+    # ── 1-2 cross-palette gradients (primary/accent → background) ─────────
+    for cross_color in rng.sample([primary, accent, secondary], rng.randint(1, 2)):
+        tier = _pick_tier(rng)
+        angle = rng.choice(all_angles)
+        cr, cg, cb = hex_to_rgb_tuple(cross_color)
+        opacity = _line_opacity(rng, tier)
+        options.append(
+            f"linear-gradient({angle}deg, rgba({cr},{cg},{cb},{opacity}) 0%, {bg} 100%)"
+        )
+
+    # ── 1-2 radial gradients (tier-aware) ─────────────────────────────────
+    for _ in range(rng.randint(1, 2)):
+        tier = _pick_tier(rng)
+        pos = rng.choice(["center", "top", "bottom", "top left", "bottom right"])
+        c1 = _solid_color(rng, bg_h, tier, hue_shift=rng.uniform(-40, 40))
+        c2 = _solid_color(rng, bg_h, tier, hue_shift=rng.uniform(20, 80))
+        options.append(f"radial-gradient(ellipse at {pos}, {c1} 0%, {c2} 100%)")
+
+    # ── 1-2 stripe patterns (tier-aware — bold = vivid bee-stripe style) ──
+    for _ in range(rng.randint(1, 2)):
+        tier = _pick_tier(rng)
+        angle = rng.choice([30, 45, 60, 90, 120, 135, 150])
+        stripe_size = rng.choice([8, 12, 16, 20, 24])
+        c1 = _solid_color(rng, bg_h, tier, hue_shift=0.0)
+        # Bold: two vivid contrasting colors; subtle/moderate: one stripe on bg
+        if tier == "bold":
+            c2 = _solid_color(rng, bg_h, tier, hue_shift=rng.uniform(90, 180))
         else:
-            options.append(f"linear-gradient({angle}deg, {c1} 0%, {c2} 100%)")
+            c2 = bg
+        half = stripe_size // 2
+        options.append(
+            f"repeating-linear-gradient({angle}deg,"
+            f" {c1} 0px, {c1} {half}px, {c2} {half}px, {c2} {stripe_size}px)"
+        )
 
-    # 1 image overlay
-    pr, pg, pb = hex_to_rgb_tuple(primary)
-    opacity = rng.choice(["0.55", "0.60", "0.65", "0.70", "0.75"])
+    # ── 1 dot grid (tier-aware, correct CSS tiling syntax) ────────────────
+    tier = _pick_tier(rng)
+    dot_size = rng.choice([4, 6, 8, 10]) if tier == "bold" else rng.choice([3, 4, 6])
+    spacing = rng.choice([20, 24, 30, 36])
+    dot_c = _solid_color(rng, bg_h, tier, hue_shift=rng.uniform(-30, 30))
     options.append(
-        f"linear-gradient(rgba({pr},{pg},{pb},{opacity}), "
-        f"rgba({pr},{pg},{pb},{opacity})), "
-        f"url('https://picsum.photos/seed/1/800/600') center/cover"
+        f"radial-gradient(circle, {dot_c} {dot_size}px, transparent {dot_size}px)"
+        f" 0 0 / {spacing}px {spacing}px,"
+        f" {bg}"
     )
+
+    # ── 0-1 conic gradient (tier-aware) ───────────────────────────────────
+    if rng.random() < 0.60:
+        tier = _pick_tier(rng)
+        from_h = rotate_hue(bg_h, rng.uniform(-40, 40))
+        num_conic_stops = rng.randint(3, 5)
+        hue_step = 360 / num_conic_stops if tier == "bold" else (360 / num_conic_stops) * 0.5
+        colors = []
+        for k in range(num_conic_stops):
+            pct = round(k * 100 / (num_conic_stops - 1))
+            colors.append(f"{_solid_color(rng, from_h, tier, hue_shift=k * hue_step)} {pct}%")
+        options.append(f"conic-gradient({', '.join(colors)})")
+
+    # ── 5-8 image overlays (beta-distributed opacity, skewed toward low) ─────
+    pr, pg, pb = hex_to_rgb_tuple(primary)
+    num_images = rng.randint(5, 8)
+    img_seeds = rng.sample(range(1, 9999), num_images)
+    for seed in img_seeds:
+        # Beta(2,5) ≈ mode ~0.17, mean ~0.29 — photo usually dominates.
+        raw = rng.betavariate(2, 5)
+        opacity = round(0.10 + raw * 0.65, 2)  # maps [0,1] → [0.10, 0.75]
+        options.append(
+            f"linear-gradient(rgba({pr},{pg},{pb},{opacity}), "
+            f"rgba({pr},{pg},{pb},{opacity})), "
+            f"url('https://picsum.photos/seed/{seed}/800/600') center/cover"
+        )
+
+    # ── 2-4 complex CSS patterns ──────────────────────────────────────────
+    all_complex = _complex_pattern_options(bg, primary, accent, rng)
+    num_complex = rng.randint(2, 4)
+    rng.shuffle(all_complex)
+    options.extend(all_complex[:num_complex])
 
     return options
 

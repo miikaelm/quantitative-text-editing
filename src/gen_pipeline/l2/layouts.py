@@ -113,6 +113,9 @@ def _role_css(s: dict) -> str:
     rot = s.get("rotation_deg", 0.0)
     if rot:
         parts.append(f"transform:rotate({rot:.1f}deg)")
+    text_shadow = s.get("text_shadow")
+    if text_shadow:
+        parts.append(f"text-shadow:{text_shadow}")
     return "; ".join(parts)
 
 
@@ -400,9 +403,15 @@ register(LayoutDefinition(
 # ---------------------------------------------------------------------------
 
 _SOLO_POS_CSS: dict[str, str] = {
-    "center":     "justify-content:center; align-items:center",
-    "top-center": "justify-content:center; align-items:flex-start; padding-top:80px",
-    "bottom-center": "justify-content:center; align-items:flex-end; padding-bottom:80px",
+    "top-left":      "justify-content:flex-start; align-items:flex-start; padding:80px 0 0 60px",
+    "top-center":    "justify-content:center;      align-items:flex-start; padding-top:80px",
+    "top-right":     "justify-content:flex-end;    align-items:flex-start; padding:80px 60px 0 0",
+    "center-left":   "justify-content:flex-start;  align-items:center;     padding-left:60px",
+    "center":        "justify-content:center;       align-items:center",
+    "center-right":  "justify-content:flex-end;     align-items:center;     padding-right:60px",
+    "bottom-left":   "justify-content:flex-start;  align-items:flex-end;   padding:0 0 80px 60px",
+    "bottom-center": "justify-content:center;      align-items:flex-end;   padding-bottom:80px",
+    "bottom-right":  "justify-content:flex-end;    align-items:flex-end;   padding:0 60px 80px 0",
 }
 
 
@@ -438,7 +447,11 @@ register(LayoutDefinition(
             can_rotate=True,
             rotation_range=(-25, 25),
             can_align=True,
-            alignment_positions=["center", "top-center", "bottom-center"],
+            alignment_positions=[
+                "top-left", "top-center", "top-right",
+                "center-left", "center", "center-right",
+                "bottom-left", "bottom-center", "bottom-right",
+            ],
         ),
     },
     role_base_styles={
