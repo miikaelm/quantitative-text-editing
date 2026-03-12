@@ -1,6 +1,6 @@
 """
-l2/content.py — Text content pools for Level 2 scenes, loaded from
-data/content_pools.json (produced by generate_content.py).
+content.py — Text content pools loaded from data/content_pools.json
+(produced by generate_content.py).
 
 The generation code samples from the pool (with replacement) to populate
 scenes. Constraints enforced during generation:
@@ -18,12 +18,12 @@ from pathlib import Path
 # A ContentSet maps role name → text string for one scene instance.
 ContentSet = dict[str, str]
 
-_JSON_PATH = Path(__file__).parents[3] / "data" / "content_pools.json"
+_JSON_PATH = Path(__file__).parents[2] / "data" / "content_pools.json"
 
 if not _JSON_PATH.exists():
     raise FileNotFoundError(
         f"Content pools not found at {_JSON_PATH}. "
-        "Run `python src/gen_pipeline/l2/generate_content.py` to generate them."
+        "Run `python src/gen_pipeline/generate_content.py` to generate them."
     )
 
 with _JSON_PATH.open(encoding="utf-8") as _f:

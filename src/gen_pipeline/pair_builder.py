@@ -1,12 +1,12 @@
 """
-l2/generate.py — Generation orchestration for Level 2 multi-element scenes.
+pair_builder.py — Generation orchestration for multi-element scenes.
 
-Public entry point:
-    generate_l2_pairs(edit_type, count, seed) -> list[EditPair]
+Public entry points:
+    build_edit_pairs(edit_type, count, seed) -> list[EditPair]
+    build_layout_pairs(layout_name, count, seed) -> list[EditPair]
 
 The returned EditPair list is compatible with generate_pairs() in generate.py
 and produces the same JSONL format, extended with:
-    metadata.difficulty     = 2
     metadata.layout_type    = "<layout_name>"
     metadata.target_role    = "<role>"
     metadata.style_package  = "<package_name>"
@@ -24,8 +24,8 @@ Flow for each sample:
     8. Compose the instruction (randomly using role name or text content).
     9. Return an EditPair with full metadata.
 
-Supported edit types (L2 suffixed):
-    color_l2, scaling_l2, typography_l2, rotation_l2, alignment_l2
+Supported edit types:
+    color, scaling, typography, rotation, alignment
 """
 
 from __future__ import annotations
@@ -34,14 +34,22 @@ import random
 from typing import Literal
 
 from gen_pipeline.build_pairs import EditPair
-from gen_pipeline.templates.base import classify_background
-from gen_pipeline.l2.layouts import (
+from gen_pipeline.layouts import (
     LayoutDefinition,
     get_layouts_for_edit,
 )
-from gen_pipeline.l2.styles import STYLE_PACKAGES, StylePackage
-from gen_pipeline.l2.content import CONTENT_POOLS, ContentSet
-from gen_pipeline.l2.jitter import SceneJitter, sample_jitter, jitter_color
+from gen_pipeline.styles import STYLE_PACKAGES, StylePackage
+from gen_pipeline.content import CONTENT_POOLS, ContentSet
+from gen_pipeline.jitter import SceneJitter, sample_jitter, jitter_color
+
+
+def classify_background(bg: str) -> str:
+    """Classify a CSS background value as 'image', 'gradient', or 'solid'."""
+    if "url(" in bg:
+        return "image"
+    if "gradient" in bg:
+        return "gradient"
+    return "solid"
 
 
 # Minimum rendered font size (px). Enforced after jitter scaling.
@@ -427,9 +435,6 @@ _ALIGNMENT_HUMAN: dict[str, str] = {
     "top-right":     "top-right corner",
     "center-left":   "left center",
     "center-right":  "right center",
-    "bottom-left":   "bottom-left corner",
-    "bottom-center": "bottom center",
-    "bottom-right":  "bottom-right corner",
     # corner_badge corner positions (same keys, covered above)
     # banner_caption caption text-alignment
     "left":  "left",
@@ -504,13 +509,13 @@ def _apply_edit_to_styles(
     return tgt
 
 
-def generate_l2_pairs_by_layout(
+def build_layout_pairs(
     layout_name: str,
     count: int,
     seed: int | None = None,
 ) -> list[EditPair]:
     """
-    Generate `count` Level 2 EditPair objects for a specific layout, randomly
+    Generate `count` EditPair objects for a specific layout, randomly
     sampling edit types from the layout's supported_edits on each iteration.
 
     Useful when adding a new layout and wanting to exercise all its edit types
@@ -524,7 +529,7 @@ def generate_l2_pairs_by_layout(
     Returns:
         List of EditPair objects ready for rendering via generate_pairs().
     """
-    from gen_pipeline.l2.layouts import get_layout
+    from gen_pipeline.layouts import get_layout
 
     rng = random.Random(seed)
     layout: LayoutDefinition = get_layout(layout_name)
@@ -536,7 +541,7 @@ def generate_l2_pairs_by_layout(
 
     for i in range(count):
         edit_type = rng.choice(layout.supported_edits)
-        pair_id = f"{layout_name}_l2_{i + 1:03d}"
+        pair_id = f"{layout_name}_{i + 1:03d}"
 
         style_pkg: StylePackage = rng.choice(STYLE_PACKAGES)
 
@@ -558,7 +563,7 @@ def generate_l2_pairs_by_layout(
         elif edit_type == "alignment":
             editable = _editable_roles_alignment(layout)
         else:
-            raise ValueError(f"Unsupported L2 edit type: '{edit_type}'")
+            raise ValueError(f"Unsupported edit type: '{edit_type}'")
 
         if not editable:
             continue
@@ -567,7 +572,6 @@ def generate_l2_pairs_by_layout(
         target_text = contents[target_role]
 
         metadata: dict = {
-            "difficulty":      2,
             "layout_type":     layout.name,
             "style_package":   style_pkg.name,
             "target_role":     target_role,
@@ -627,7 +631,7 @@ def generate_l2_pairs_by_layout(
 
         pairs.append(EditPair(
             pair_id=pair_id,
-            edit_type=f"{edit_type}_l2",
+            edit_type=edit_type,
             source_html=source_html,
             target_html=target_html,
             instruction=instruction,
@@ -637,16 +641,16 @@ def generate_l2_pairs_by_layout(
     return pairs
 
 
-def generate_l2_pairs(
+def build_edit_pairs(
     edit_type: str,
     count: int,
     seed: int | None = None,
 ) -> list[EditPair]:
     """
-    Generate `count` Level 2 EditPair objects for the given base edit type.
+    Generate `count` EditPair objects for the given edit type.
 
     Args:
-        edit_type: Base edit type without "_l2" suffix (e.g. "color", "scaling").
+        edit_type: Edit type (e.g. "color", "scaling", "typography", "rotation", "alignment").
         count:     Number of pairs to generate.
         seed:      Optional RNG seed for reproducibility.
 
@@ -662,7 +666,7 @@ def generate_l2_pairs(
     pairs: list[EditPair] = []
 
     for i in range(count):
-        pair_id = f"{edit_type}_l2_{i + 1:03d}"
+        pair_id = f"{edit_type}_{i + 1:03d}"
 
         # 1. Pick layout and style package.
         layout: LayoutDefinition = rng.choice(compatible_layouts)
@@ -691,12 +695,11 @@ def generate_l2_pairs(
         elif edit_type == "alignment":
             editable = _editable_roles_alignment(layout)
         else:
-            raise ValueError(f"Unsupported L2 edit type: '{edit_type}'")
+            raise ValueError(f"Unsupported edit type: '{edit_type}'")
 
         if not editable:
             # Rare: layout was included in compatible_layouts but no role
             # satisfies fine-grained constraints. Skip and regenerate.
-            count_remaining = count - len(pairs)
             continue
 
         target_role = rng.choice(editable)
@@ -704,7 +707,6 @@ def generate_l2_pairs(
 
         # 6. Build edit parameters and derive target styles.
         metadata: dict = {
-            "difficulty":     2,
             "layout_type":    layout.name,
             "style_package":  style_pkg.name,
             "target_role":    target_role,
@@ -782,7 +784,7 @@ def generate_l2_pairs(
 
         pairs.append(EditPair(
             pair_id=pair_id,
-            edit_type=f"{edit_type}_l2",
+            edit_type=edit_type,
             source_html=source_html,
             target_html=target_html,
             instruction=instruction,

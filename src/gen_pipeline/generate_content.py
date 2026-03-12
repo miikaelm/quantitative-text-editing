@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-generate_content_pools.py — Generate large-scale content pools for L2 scenes
+generate_content.py — Generate large-scale content pools for scenes
 using the OpenAI API, with automatic constraint validation.
 
 Usage:
@@ -23,7 +23,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from gen_pipeline.l2.api_tracker import DummyOpenAI, OpenAIClient, TrackedOpenAI
+from gen_pipeline.api_tracker import DummyOpenAI, OpenAIClient, TrackedOpenAI
 
 # ---------------------------------------------------------------------------
 # Layout type schemas: roles, constraints, and few-shot examples

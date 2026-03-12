@@ -1,13 +1,12 @@
 """
-generate.py — Orchestrator: specs → pairs → render → write JSONL.
+generate.py — Orchestrator: pairs -> render -> write JSONL.
 
-Thin pipeline driver. Spec definitions and HTML template logic live in
-submodules; this file only wires them together.
+Thin pipeline driver. Pair generation logic lives in pair_builder.py;
+this file only wires rendering and JSONL writing.
 
 To add a new edit type:
-    1. Add gen_pipeline/specs/<type>.py   with generate_<type>_specs()
-    2. Add gen_pipeline/templates/<type>.py with build_<type>_html()
-    3. Call build_pairs(specs, build_<type>_html) below and pass to generate_pairs()
+    1. Add the edit type to gen_pipeline/layouts.py (supported_edits)
+    2. Add a builder function in gen_pipeline/pair_builder.py
 """
 
 import argparse
@@ -21,18 +20,8 @@ from dataclasses import dataclass, field
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from gen_pipeline.render import Renderer, RenderConfig
-from gen_pipeline.build_pairs import EditPair, build_pairs
-from gen_pipeline.specs.color import generate_color_specs
-from gen_pipeline.templates.color import build_color_html
-from gen_pipeline.specs.alignment import generate_alignment_specs
-from gen_pipeline.templates.alignment import build_alignment_html
-from gen_pipeline.specs.scaling import generate_scaling_specs
-from gen_pipeline.templates.scaling import build_scaling_html
-from gen_pipeline.specs.typography import generate_typography_specs
-from gen_pipeline.templates.typography import build_typography_html
-from gen_pipeline.specs.rotation import generate_rotation_specs
-from gen_pipeline.templates.rotation import build_rotation_html
-from gen_pipeline.l2.generate import generate_l2_pairs, generate_l2_pairs_by_layout
+from gen_pipeline.build_pairs import EditPair
+from gen_pipeline.pair_builder import build_edit_pairs, build_layout_pairs
 from utils.ocr import find_text_bbox
 
 
@@ -147,7 +136,7 @@ async def generate_pairs(
 
                 # For typography edits that need pixel-based reference measurements,
                 # compute and store them now while we have access to both rendered images.
-                if record.get("edit_type") in ("typography", "typography_l2"):
+                if record.get("edit_type") == "typography":
                     _add_typography_reference_measurements(record, src_result.image_path, tgt_result.image_path)
 
                 if src_result.errors or tgt_result.errors:
@@ -181,84 +170,46 @@ if __name__ == "__main__":
         "--edit-type", default="color",
         help=(
             "Edit type to generate (default: color). "
-            "Level 1: color, alignment, scaling, typography, rotation. "
-            "Level 2: color_l2, scaling_l2, typography_l2, rotation_l2, alignment_l2."
+            "Supported: color, alignment, scaling, typography, rotation."
         ),
     )
     parser.add_argument(
-        "--count", type=int, default=None,
-        help="Number of pairs to generate (Level 2 only; Level 1 uses hardcoded sets).",
+        "--count", type=int, required=True,
+        help="Number of pairs to generate.",
     )
     parser.add_argument(
         "--seed", type=int, default=None,
-        help="RNG seed for reproducible Level 2 generation.",
+        help="RNG seed for reproducible generation.",
     )
     parser.add_argument(
         "--layout", default=None,
         help=(
-            "Level 2 layout name (e.g. title_byline, split_panel). "
+            "Layout name (e.g. title_byline, split_panel). "
             "When set, generates pairs for that layout sampling edit types randomly. "
-            "Requires --count. Mutually exclusive with --edit-type."
+            "Mutually exclusive with --edit-type."
         ),
     )
     args = parser.parse_args()
 
     # ---------------------------------------------------------------------------
-    # Layout-first mode: --layout overrides --edit-type for L2 generation
+    # Layout-first mode: --layout overrides --edit-type
     # ---------------------------------------------------------------------------
     if args.layout is not None:
-        if args.count is None:
-            print("Error: --count is required when using --layout.")
-            sys.exit(1)
-        config = GenerateConfig(edit_type="mixed_l2", output_dir=args.output_dir)
-        pairs = generate_l2_pairs_by_layout(args.layout, count=args.count, seed=args.seed)
-        print(f"Generating {len(pairs)} pairs for layout '{args.layout}' → {args.output_dir}")
+        config = GenerateConfig(edit_type="mixed", output_dir=args.output_dir)
+        pairs = build_layout_pairs(args.layout, count=args.count, seed=args.seed)
+        print(f"Generating {len(pairs)} pairs for layout '{args.layout}' -> {args.output_dir}")
         jsonl_path = generate_pairs_sync(pairs, config)
         print(f"\nDone. JSONL written to: {jsonl_path}")
         sys.exit(0)
 
-    config = GenerateConfig(
-        edit_type=args.edit_type,
-        output_dir=args.output_dir,
-    )
-
-    # ---------------------------------------------------------------------------
-    # Level 1 edit types — fixed spec sets, no --count
-    # ---------------------------------------------------------------------------
-    if args.edit_type == "color":
-        specs = generate_color_specs()
-        pairs = build_pairs(specs, build_color_html)
-    elif args.edit_type == "alignment":
-        specs = generate_alignment_specs()
-        pairs = build_pairs(specs, build_alignment_html)
-    elif args.edit_type == "scaling":
-        specs = generate_scaling_specs()
-        pairs = build_pairs(specs, build_scaling_html)
-    elif args.edit_type == "typography":
-        specs = generate_typography_specs()
-        pairs = build_pairs(specs, build_typography_html)
-    elif args.edit_type == "rotation":
-        specs = generate_rotation_specs()
-        pairs = build_pairs(specs, build_rotation_html)
-
-    # ---------------------------------------------------------------------------
-    # Level 2 edit types — multi-element scenes, requires --count
-    # ---------------------------------------------------------------------------
-    elif args.edit_type in ("color_l2", "scaling_l2", "typography_l2", "rotation_l2", "alignment_l2"):
-        if args.count is None:
-            print(f"Error: --count is required for Level 2 edit types.")
-            sys.exit(1)
-        base_type = args.edit_type.removesuffix("_l2")
-        pairs = generate_l2_pairs(base_type, count=args.count, seed=args.seed)
-
-    else:
-        supported = (
-            "color, alignment, scaling, typography, rotation, "
-            "color_l2, scaling_l2, typography_l2, rotation_l2, alignment_l2"
-        )
+    supported = "color, alignment, scaling, typography, rotation"
+    if args.edit_type not in ("color", "alignment", "scaling", "typography", "rotation"):
         print(f"Unknown edit type: {args.edit_type!r}. Supported: {supported}")
         sys.exit(1)
 
-    print(f"Generating {len(pairs)} {args.edit_type} pairs → {args.output_dir}")
+    config = GenerateConfig(edit_type=args.edit_type, output_dir=args.output_dir)
+    pairs = build_edit_pairs(args.edit_type, count=args.count, seed=args.seed)
+
+    print(f"Generating {len(pairs)} {args.edit_type} pairs -> {args.output_dir}")
     jsonl_path = generate_pairs_sync(pairs, config)
     print(f"\nDone. JSONL written to: {jsonl_path}")

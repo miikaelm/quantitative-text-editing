@@ -1,5 +1,5 @@
 """
-l2/layouts.py — Layout registry, definitions, and HTML builders for Level 2 scenes.
+layouts.py — Layout registry, definitions, and HTML builders for scenes.
 
 A LayoutDefinition declares:
   - roles: text elements present in the scene (e.g. ["title", "subtitle"])
@@ -11,7 +11,7 @@ A LayoutDefinition declares:
 Font size should be kept over 30 px
 
 Usage:
-    from gen_pipeline.l2.layouts import get_layouts_for_edit, get_layout, all_layouts
+    from gen_pipeline.layouts import get_layouts_for_edit, get_layout, all_layouts
 
     color_layouts = get_layouts_for_edit("color")
     layout = get_layout("title_subtitle")
@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 
-from gen_pipeline.l2.jitter import SceneJitter
+from gen_pipeline.jitter import SceneJitter
 
 
 def _px(base: float, scale: float, minimum: int = 4) -> str:

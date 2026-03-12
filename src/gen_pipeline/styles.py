@@ -1,15 +1,13 @@
 """
-l2/styles.py — Style packages loaded from JSONL.
+styles.py — Style packages loaded from JSONL.
 
-Drop-in replacement for the old hardcoded styles.py.
 Loads style packages from a JSONL file (one JSON object per line),
 each containing: name, palette, font_heading, font_body,
 background_options, edit_alternatives.
 
 Usage:
-    from l2.styles import STYLE_PACKAGES, StylePackage
+    from gen_pipeline.styles import STYLE_PACKAGES, StylePackage
 
-    # Random selection (same interface as before):
     pkg = random.choice(STYLE_PACKAGES)
     bg  = pkg.pick_background()
 """
@@ -71,7 +69,7 @@ def load_style_packages(
         List of StylePackage instances.
     """
     if path is None:
-        path = Path(__file__).parent.parent.parent.parent / "data" / "style_packages.jsonl"
+        path = Path(__file__).parent.parent.parent / "data" / "style_packages.jsonl"
     else:
         path = Path(path)
 

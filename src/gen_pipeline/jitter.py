@@ -1,5 +1,5 @@
 """
-l2/jitter.py — Per-scene style jitter for training diversity.
+jitter.py — Per-scene style jitter for training diversity.
 
 A SceneJitter is sampled once per scene and shared by both source and target
 HTML builders. Source and target differ only in the one edited property; all
@@ -7,7 +7,7 @@ jitter values are identical between them so the model learns the edit, not
 scene-level noise.
 
 Usage:
-    from gen_pipeline.l2.jitter import SceneJitter, sample_jitter, jitter_color
+    from gen_pipeline.jitter import SceneJitter, sample_jitter, jitter_color
 
     jitter = sample_jitter(rng)
     shifted = jitter_color("#3B82F6", jitter)
