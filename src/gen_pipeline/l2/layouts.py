@@ -79,7 +79,7 @@ def register(layout: LayoutDefinition) -> LayoutDefinition:
 
 def get_layouts_for_edit(edit_type: str) -> list[LayoutDefinition]:
     """Return all layouts that declare support for the given edit type."""
-    return [l for l in _REGISTRY.values() if edit_type in l.supported_edits]
+    return [layout for layout in _REGISTRY.values() if edit_type in layout.supported_edits]
 
 
 def get_layout(name: str) -> LayoutDefinition:
