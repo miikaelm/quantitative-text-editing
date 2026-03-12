@@ -6,3 +6,4 @@ CLAUDE.md
 /tests
 /notebooks
 *.egg-info
+*.csv
