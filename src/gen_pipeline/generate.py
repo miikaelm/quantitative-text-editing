@@ -29,6 +29,8 @@ from utils.ocr import find_text_bbox
 # Configuration
 # ---------------------------------------------------------------------------
 
+SUPPORTED_EDIT_TYPES = ("color", "alignment", "scaling", "typography", "rotation")
+
 @dataclass
 class GenerateConfig:
     edit_type: str = "color"
@@ -38,6 +40,60 @@ class GenerateConfig:
     # Fallback root when output_dir is not set.
     output_root: Path = Path("data")
     render: RenderConfig = field(default_factory=RenderConfig)
+
+
+@dataclass
+class PipelineConfig:
+    """
+    Top-level config for a multi-type generation run.
+
+    YAML layout::
+
+        output_dir: data/batch_01
+        seed: 42
+        counts:
+            color: 50
+            scaling: 20
+            typography: 30
+        render:
+            width: 1024
+            height: 1024
+            downscale_to: 512
+    """
+    output_dir: Path = Path("data/batch_01")
+    seed: int | None = None
+    counts: dict = field(default_factory=lambda: {"color": 20})
+    render: RenderConfig = field(default_factory=RenderConfig)
+
+
+def load_pipeline_config(path: Path) -> PipelineConfig:
+    """Load a PipelineConfig from a YAML file."""
+    try:
+        import yaml
+    except ImportError:
+        raise ImportError("PyYAML is required for config files: pip install pyyaml")
+
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    render_cfg = RenderConfig()
+    if "render" in data:
+        r = data["render"]
+        render_cfg = RenderConfig(
+            width=r.get("width", render_cfg.width),
+            height=r.get("height", render_cfg.height),
+            device_scale_factor=r.get("device_scale_factor", render_cfg.device_scale_factor),
+            downscale_to=r.get("downscale_to", render_cfg.downscale_to),
+            disable_animations=r.get("disable_animations", render_cfg.disable_animations),
+            default_font=r.get("default_font", render_cfg.default_font),
+        )
+
+    return PipelineConfig(
+        output_dir=Path(data["output_dir"]),
+        seed=data.get("seed"),
+        counts=data.get("counts", {"color": 20}),
+        render=render_cfg,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +151,12 @@ async def generate_pairs(
     pairs: list[EditPair],
     config: GenerateConfig,
 ) -> Path:
-    """Render all pairs and write a JSONL file. Returns the JSONL path."""
+    """Render all pairs and append to a JSONL file. Returns the JSONL path.
+
+    If the JSONL file already exists the new records are appended; existing
+    records are never overwritten. The images/ sub-directory works the same
+    way — new images are added alongside any that already exist.
+    """
     if config.output_dir is not None:
         base_dir = config.output_dir
     else:
@@ -108,7 +169,7 @@ async def generate_pairs(
     jsonl_path.parent.mkdir(parents=True, exist_ok=True)
 
     async with Renderer(config.render) as renderer:
-        with jsonl_path.open("w", encoding="utf-8") as f:
+        with jsonl_path.open("a", encoding="utf-8") as f:
             for pair in pairs:
                 src_result, tgt_result = await renderer.render_pair(
                     source_html=pair.source_html,
@@ -157,25 +218,110 @@ def generate_pairs_sync(
 
 
 # ---------------------------------------------------------------------------
+# Pipeline runner (multi-type)
+# ---------------------------------------------------------------------------
+
+def _count_existing_records(jsonl_path: Path, edit_type: str | None = None) -> int:
+    """Count records in a JSONL file, optionally filtered to a specific edit_type."""
+    if not jsonl_path.exists():
+        return 0
+    count = 0
+    with jsonl_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if edit_type is None:
+                count += 1
+            else:
+                try:
+                    record = json.loads(line)
+                    if record.get("edit_type") == edit_type:
+                        count += 1
+                except json.JSONDecodeError:
+                    pass
+    return count
+
+
+async def run_pipeline(config: PipelineConfig) -> dict[str, Path]:
+    """
+    Run generation for every edit type listed in config.counts.
+
+    All edit types write into the same output_dir — one shared pairs.jsonl
+    and one shared images/ folder. Returns a mapping of edit_type -> jsonl_path.
+    """
+    results: dict[str, Path] = {}
+
+    jsonl_path = config.output_dir / "pairs.jsonl"
+
+    for edit_type, count in config.counts.items():
+        if edit_type not in SUPPORTED_EDIT_TYPES:
+            print(f"  [pipeline] WARNING: skipping unknown edit type '{edit_type}'")
+            continue
+
+        id_offset = _count_existing_records(jsonl_path, edit_type=edit_type)
+        if id_offset:
+            print(f"\n[pipeline] Found {id_offset} existing '{edit_type}' records — resuming from id {id_offset + 1:03d}")
+
+        print(f"\n[pipeline] Generating {count} '{edit_type}' pairs ...")
+        gen_cfg = GenerateConfig(
+            edit_type=edit_type,
+            output_dir=config.output_dir,
+            render=config.render,
+        )
+        pairs = build_edit_pairs(edit_type, count=count, seed=config.seed, id_offset=id_offset)
+        jsonl_path_out = await generate_pairs(pairs, gen_cfg)
+        results[edit_type] = jsonl_path_out
+        print(f"[pipeline] '{edit_type}' done -> {jsonl_path_out}")
+
+    return results
+
+
+def run_pipeline_sync(config: PipelineConfig) -> dict[str, Path]:
+    """Synchronous wrapper for run_pipeline."""
+    return asyncio.run(run_pipeline(config))
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Generate edit pairs and render images.")
+    parser = argparse.ArgumentParser(
+        description="Generate edit pairs and render images.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Modes (mutually exclusive):\n"
+            "  --config FILE          Run a multi-type pipeline from a YAML config.\n"
+            "  --edit-type / --count  Generate a single edit type (original behaviour).\n"
+            "  --layout               Generate pairs for one layout (original behaviour).\n"
+            "\n"
+            "Output is always appended — existing pairs.jsonl and images/ are preserved."
+        ),
+    )
+
+    # --- config-file mode ---
     parser.add_argument(
-        "--output-dir", type=Path, required=True,
-        help="Directory to write pairs.jsonl and images/ into (e.g. data/color/batch_01)",
+        "--config", type=Path, default=None,
+        help="Path to a YAML PipelineConfig file. Mutually exclusive with --edit-type/--layout.",
+    )
+
+    # --- single-type / layout modes (original) ---
+    parser.add_argument(
+        "--output-dir", type=Path, default=None,
+        help="Directory to write pairs.jsonl and images/ into (e.g. data/color/batch_01). "
+             "Required for --edit-type and --layout modes.",
     )
     parser.add_argument(
         "--edit-type", default="color",
         help=(
             "Edit type to generate (default: color). "
-            "Supported: color, alignment, scaling, typography, rotation."
+            f"Supported: {', '.join(SUPPORTED_EDIT_TYPES)}."
         ),
     )
     parser.add_argument(
-        "--count", type=int, required=True,
-        help="Number of pairs to generate.",
+        "--count", type=int, default=None,
+        help="Number of pairs to generate. Required for --edit-type and --layout modes.",
     )
     parser.add_argument(
         "--seed", type=int, default=None,
@@ -192,24 +338,58 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # ---------------------------------------------------------------------------
+    # Config-file mode
+    # ---------------------------------------------------------------------------
+    if args.config is not None:
+        if args.layout is not None:
+            parser.error("--config and --layout are mutually exclusive")
+        pipeline_cfg = load_pipeline_config(args.config)
+        # Allow --seed / --output-dir to override what's in the YAML
+        if args.seed is not None:
+            pipeline_cfg.seed = args.seed
+        if args.output_dir is not None:
+            pipeline_cfg.output_dir = args.output_dir
+        print(f"Running pipeline from config: {args.config}")
+        print(f"  output_dir : {pipeline_cfg.output_dir}")
+        print(f"  seed       : {pipeline_cfg.seed}")
+        print(f"  counts     : {pipeline_cfg.counts}")
+        results = run_pipeline_sync(pipeline_cfg)
+        print(f"\nDone. {len(results)} edit type(s) generated:")
+        for et, p in results.items():
+            print(f"  {et}: {p}")
+        sys.exit(0)
+
+    # ---------------------------------------------------------------------------
     # Layout-first mode: --layout overrides --edit-type
     # ---------------------------------------------------------------------------
     if args.layout is not None:
-        config = GenerateConfig(edit_type="mixed", output_dir=args.output_dir)
-        pairs = build_layout_pairs(args.layout, count=args.count, seed=args.seed)
+        if args.output_dir is None or args.count is None:
+            parser.error("--layout requires --output-dir and --count")
+        gen_cfg = GenerateConfig(edit_type="mixed", output_dir=args.output_dir)
+        id_offset = _count_existing_records(args.output_dir / "pairs.jsonl")
+        if id_offset:
+            print(f"Found {id_offset} existing records — resuming from id {id_offset + 1:03d}")
+        pairs = build_layout_pairs(args.layout, count=args.count, seed=args.seed, id_offset=id_offset)
         print(f"Generating {len(pairs)} pairs for layout '{args.layout}' -> {args.output_dir}")
-        jsonl_path = generate_pairs_sync(pairs, config)
+        jsonl_path = generate_pairs_sync(pairs, gen_cfg)
         print(f"\nDone. JSONL written to: {jsonl_path}")
         sys.exit(0)
 
-    supported = "color, alignment, scaling, typography, rotation"
-    if args.edit_type not in ("color", "alignment", "scaling", "typography", "rotation"):
-        print(f"Unknown edit type: {args.edit_type!r}. Supported: {supported}")
-        sys.exit(1)
+    # ---------------------------------------------------------------------------
+    # Single edit-type mode (original behaviour)
+    # ---------------------------------------------------------------------------
+    if args.output_dir is None or args.count is None:
+        parser.error("--edit-type mode requires --output-dir and --count")
 
-    config = GenerateConfig(edit_type=args.edit_type, output_dir=args.output_dir)
-    pairs = build_edit_pairs(args.edit_type, count=args.count, seed=args.seed)
+    if args.edit_type not in SUPPORTED_EDIT_TYPES:
+        parser.error(f"Unknown edit type: {args.edit_type!r}. Supported: {', '.join(SUPPORTED_EDIT_TYPES)}")
+
+    gen_cfg = GenerateConfig(edit_type=args.edit_type, output_dir=args.output_dir)
+    id_offset = _count_existing_records(args.output_dir / "pairs.jsonl", edit_type=args.edit_type)
+    if id_offset:
+        print(f"Found {id_offset} existing '{args.edit_type}' records — resuming from id {id_offset + 1:03d}")
+    pairs = build_edit_pairs(args.edit_type, count=args.count, seed=args.seed, id_offset=id_offset)
 
     print(f"Generating {len(pairs)} {args.edit_type} pairs -> {args.output_dir}")
-    jsonl_path = generate_pairs_sync(pairs, config)
+    jsonl_path = generate_pairs_sync(pairs, gen_cfg)
     print(f"\nDone. JSONL written to: {jsonl_path}")

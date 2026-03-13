@@ -34,6 +34,7 @@ import random
 from typing import Literal
 
 from gen_pipeline.build_pairs import EditPair
+from evaluation.metrics.color import compute_delta_e, hex_to_rgb
 from gen_pipeline.layouts import (
     LayoutDefinition,
     get_layouts_for_edit,
@@ -513,6 +514,7 @@ def build_layout_pairs(
     layout_name: str,
     count: int,
     seed: int | None = None,
+    id_offset: int = 0,
 ) -> list[EditPair]:
     """
     Generate `count` EditPair objects for a specific layout, randomly
@@ -537,11 +539,15 @@ def build_layout_pairs(
     if not layout.supported_edits:
         raise ValueError(f"Layout '{layout_name}' has no supported_edits")
 
+    # Advance RNG past the already-generated samples so new pairs differ in content.
+    for _ in range(id_offset):
+        rng.random()
+
     pairs: list[EditPair] = []
 
     for i in range(count):
         edit_type = rng.choice(layout.supported_edits)
-        pair_id = f"{layout_name}_{i + 1:03d}"
+        pair_id = f"{layout_name}_{i + 1 + id_offset:03d}"
 
         style_pkg: StylePackage = rng.choice(STYLE_PACKAGES)
 
@@ -586,7 +592,12 @@ def build_layout_pairs(
             old_hex, new_hex = _build_color_edit(target_role, role_styles, role_slots, style_pkg, rng, jitter)
             target_styles = _apply_edit_to_styles(role_styles, target_role, "color", new_hex)
             instruction = _make_color_instruction(target_role, target_text, new_hex, rng)
-            metadata.update({"property": "color", "old_value": old_hex, "new_value": new_hex})
+            metadata.update({
+                "property": "color",
+                "old_value": old_hex,
+                "new_value": new_hex,
+                "planned_delta_e": round(compute_delta_e(hex_to_rgb(old_hex), hex_to_rgb(new_hex)), 4),
+            })
 
         elif edit_type == "scaling":
             old_px, new_px = _build_scaling_edit(target_role, role_styles, rng)
@@ -645,6 +656,7 @@ def build_edit_pairs(
     edit_type: str,
     count: int,
     seed: int | None = None,
+    id_offset: int = 0,
 ) -> list[EditPair]:
     """
     Generate `count` EditPair objects for the given edit type.
@@ -663,10 +675,14 @@ def build_edit_pairs(
     if not compatible_layouts:
         raise ValueError(f"No layouts support edit type '{edit_type}'")
 
+    # Advance RNG past the already-generated samples so new pairs differ in content.
+    for _ in range(id_offset):
+        rng.random()
+
     pairs: list[EditPair] = []
 
     for i in range(count):
-        pair_id = f"{edit_type}_{i + 1:03d}"
+        pair_id = f"{edit_type}_{i + 1 + id_offset:03d}"
 
         # 1. Pick layout and style package.
         layout: LayoutDefinition = rng.choice(compatible_layouts)
@@ -722,9 +738,10 @@ def build_edit_pairs(
             target_styles = _apply_edit_to_styles(role_styles, target_role, "color", new_hex)
             instruction = _make_color_instruction(target_role, target_text, new_hex, rng)
             metadata.update({
-                "property":  "color",
-                "old_value": old_hex,
-                "new_value": new_hex,
+                "property":       "color",
+                "old_value":      old_hex,
+                "new_value":      new_hex,
+                "planned_delta_e": round(compute_delta_e(hex_to_rgb(old_hex), hex_to_rgb(new_hex)), 4),
             })
 
         elif edit_type == "scaling":

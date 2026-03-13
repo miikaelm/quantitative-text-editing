@@ -1,0 +1,18 @@
+# Example PipelineConfig — small color-only generation run.
+#
+# Usage:
+#   python src/gen_pipeline/generate.py --config configs/gen_color_small.yaml
+#
+# All keys are optional except output_dir and counts.
+
+output_dir: data/test_01
+seed: 42
+
+counts:
+  color: 5
+
+render:
+  width: 1024
+  height: 1024
+  downscale_to: 512
+  disable_animations: true

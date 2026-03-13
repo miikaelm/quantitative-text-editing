@@ -1,24 +1,36 @@
 """
 metrics/rotation.py — Rotation edit measurement.
 
-Estimates the rotation angle applied to the text in a model output image
-by sweeping candidate angles and finding which rotation of the source image
-best matches the output (normalized cross-correlation template search).
+Two measurement strategies are available, selected automatically:
 
-This avoids relying on OCR — which fails on heavily rotated text — and
-instead treats the problem as a 1-D angle search over a known signal.
+  1. Image-moments (preferred, used when source_bbox is in metadata):
+       Crops both images to the text element region (expanded to contain the element
+       at any angle), then estimates the absolute orientation of the target crop
+       via PCA on foreground pixels.  angle_error = |measured_target − new_angle_deg|.
+
+       Why not NCC for element-level rotation: the NCC full-image sweep rotates the
+       entire source image, so the background (dominant by area) always matches best
+       at 0° regardless of element rotation.  Image moments work on the crop and
+       directly read the absolute text orientation.
+
+  2. NCC sweep (fallback, used when no bbox is available):
+       Sweeps candidate angles, rotating the full source image and measuring NCC
+       against the full output.  Designed for global image rotation or when no bbox
+       can be supplied.  Note: the sweep measures the *delta* rotation (angle applied
+       to source), but angle_error is computed against new_angle_deg — correct only
+       when old_angle_deg ≈ 0.
 
 Primary metrics:
     measured_angle_deg  — estimated CSS-convention clockwise rotation of output text
     angle_error_deg     — |measured_angle_deg − target_angle_deg|
-    ecr                 — Edit Completion Ratio: fraction of planned rotation achieved
-                          ECR = 1 − angle_error / |rotation_delta_deg|
-                          1.0 = perfect, 0.0 = no change, negative = overshot or wrong direction
+    ecr                 — Edit Completion Ratio: 1 − angle_error / |rotation_delta_deg|
+    fg_pixel_count      — foreground pixels in element crop (moments path); None for NCC
+    search_score        — peak NCC score (NCC path); None for moments
 
 Inputs (all from metadata):
     old_angle_deg       — source rotation (degrees, CSS clockwise convention)
     new_angle_deg       — target rotation
-    rotation_delta_deg  — new_angle_deg − old_angle_deg (signed)
+    source_bbox         — {x, y, width, height} element bounding box (enables moments path)
 """
 
 from __future__ import annotations
@@ -37,17 +49,103 @@ import numpy as np
 class RotationMeasurement:
     """Measurement result for a single rotation evaluation."""
 
-    measured_angle_deg: float       # estimated rotation angle in output image (CSS clockwise)
-    source_angle_deg: float         # rotation in source (old_angle_deg)
-    target_angle_deg: float         # intended rotation (new_angle_deg)
-    angle_error_deg: float          # |measured − target| in degrees
-    rotation_delta_deg: float       # planned total rotation (target − source)
-    ecr: float | None               # Edit Completion Ratio (None if delta ≈ 0)
-    search_score: float             # peak NCC score from the angle sweep (quality indicator)
+    measured_angle_deg: float           # estimated rotation angle in output image (CSS clockwise)
+    source_angle_deg: float             # rotation in source (old_angle_deg)
+    target_angle_deg: float             # intended rotation (new_angle_deg)
+    angle_error_deg: float              # |measured − target| in degrees
+    rotation_delta_deg: float           # planned total rotation (target − source)
+    ecr: float | None                   # Edit Completion Ratio (None if delta ≈ 0)
+    fg_pixel_count: int | None          # foreground pixels in element crop (moments path)
+    search_score: float | None          # peak NCC score (NCC path)
 
 
 # ---------------------------------------------------------------------------
-# Angle sweep — primary measurement strategy
+# Image-moments strategy (element crop)
+# ---------------------------------------------------------------------------
+
+def _crop_to_element(img: np.ndarray, bbox: dict) -> np.ndarray:
+    """
+    Crop image to a square centred on the element, large enough to contain the
+    element at any rotation angle (half-size = bbox diagonal × 0.7 + pad).
+    """
+    cx = bbox["x"] + bbox["width"] / 2.0
+    cy = bbox["y"] + bbox["height"] / 2.0
+    half = int(math.hypot(bbox["width"], bbox["height"]) * 0.7) + 4
+    H, W = img.shape[:2]
+    x0 = max(0, int(cx - half))
+    y0 = max(0, int(cy - half))
+    x1 = min(W, int(cx + half))
+    y1 = min(H, int(cy + half))
+    return img[y0:y1, x0:x1]
+
+
+def _measure_angle_by_moments(crop: np.ndarray) -> tuple[float, int]:
+    """
+    Estimate the dominant orientation angle (degrees, CSS clockwise) of text in a crop
+    using image moments (PCA on foreground pixels).
+
+    Assumes the text mass forms an elongated blob whose principal axis aligns with the
+    text line direction.  Reliable when the text is wider than it is tall, which holds
+    for the rotation range used in generation (±30°).
+
+    Returns:
+        (angle_deg, fg_pixel_count)
+        angle_deg is in approximately [−90, 90].
+    """
+    gray = np.mean(crop, axis=2).astype(np.float64) if crop.ndim == 3 else crop.astype(np.float64)
+    if np.mean(gray) > 128:
+        gray = 255.0 - gray          # invert: make text pixels bright
+    thresh = np.max(gray) * 0.3
+    if thresh < 1.0:
+        return 0.0, 0
+    ys, xs = np.where(gray > thresh)
+    n = len(xs)
+    if n < 50:
+        return 0.0, n
+    cx_f = float(xs.mean())
+    cy_f = float(ys.mean())
+    dx = xs - cx_f
+    dy = ys - cy_f
+    cxx = float(np.mean(dx * dx))
+    cxy = float(np.mean(dx * dy))
+    cyy = float(np.mean(dy * dy))
+    angle_rad = 0.5 * math.atan2(2.0 * cxy, cxx - cyy)
+    return math.degrees(angle_rad), n
+
+
+def _evaluate_by_moments(
+    source_img: np.ndarray,
+    output_img: np.ndarray,
+    old_angle: float,
+    new_angle: float,
+    bbox: dict,
+) -> RotationMeasurement:
+    """Measure rotation using image moments on the element crop."""
+    src_crop = _crop_to_element(source_img, bbox)
+    tgt_crop = _crop_to_element(output_img, bbox)
+
+    measured_angle, tgt_fg = _measure_angle_by_moments(tgt_crop)
+    _, src_fg = _measure_angle_by_moments(src_crop)
+    fg_pixel_count = min(src_fg, tgt_fg)
+
+    delta = round(new_angle - old_angle, 4)
+    angle_error = round(abs(measured_angle - new_angle), 2)
+    ecr = _compute_ecr(measured_angle, new_angle, old_angle)
+
+    return RotationMeasurement(
+        measured_angle_deg=round(measured_angle, 2),
+        source_angle_deg=old_angle,
+        target_angle_deg=new_angle,
+        angle_error_deg=angle_error,
+        rotation_delta_deg=delta,
+        ecr=ecr,
+        fg_pixel_count=fg_pixel_count,
+        search_score=None,
+    )
+
+
+# ---------------------------------------------------------------------------
+# NCC sweep strategy (full-image fallback)
 # ---------------------------------------------------------------------------
 
 def _estimate_bg_color(img: np.ndarray) -> tuple[int, int, int]:
@@ -91,14 +189,14 @@ def estimate_rotation_angle(
     Estimate the rotation angle applied to the source image to produce the output,
     using a two-pass (coarse then fine) foreground-focused NCC sweep.
 
-    Two design decisions vs a naive full-image NCC:
-    1. PIL rotation is performed with fillcolor=bg so corner fill pixels do NOT
-       create a large mismatch against the output background.
-    2. NCC is computed on foreground-only (text) pixels; background pixels are
-       zeroed out.  Without this, a uniform background dominates the dot product
-       and makes every angle look equally good (NCC ≈ 1.0 everywhere).
+    NOTE: This function rotates the entire source image and compares to the entire
+    output image.  It works correctly for global image rotation.  For layouts where
+    only one element is rotated, use evaluate_rotation_edit with source_bbox in
+    metadata instead — it will use the image-moments path on the element crop.
 
-    Searches a window of [old_angle − padding, new_angle + padding].
+    The sweep measures the *delta* rotation applied to the source.  The returned
+    angle is compared against new_angle_deg in evaluate_rotation_edit, so results
+    are only directly interpretable when old_angle_deg ≈ 0.
 
     Returns:
         (best_angle_deg, best_ncc_score)
@@ -145,8 +243,45 @@ def estimate_rotation_angle(
     return round(float(best_angle), 2), round(float(best_score), 4)
 
 
+def _evaluate_by_ncc(
+    source_img: np.ndarray,
+    output_img: np.ndarray,
+    old_angle: float,
+    new_angle: float,
+    coarse_step_deg: float,
+    fine_step_deg: float,
+    search_padding_deg: float,
+) -> RotationMeasurement:
+    """Measure rotation using the full-image NCC sweep."""
+    delta = round(new_angle - old_angle, 4)
+
+    measured_angle, search_score = estimate_rotation_angle(
+        source_img=source_img,
+        output_img=output_img,
+        old_angle_deg=old_angle,
+        new_angle_deg=new_angle,
+        coarse_step_deg=coarse_step_deg,
+        fine_step_deg=fine_step_deg,
+        search_padding_deg=search_padding_deg,
+    )
+
+    angle_error = round(abs(measured_angle - new_angle), 2)
+    ecr = _compute_ecr(measured_angle, new_angle, old_angle)
+
+    return RotationMeasurement(
+        measured_angle_deg=measured_angle,
+        source_angle_deg=old_angle,
+        target_angle_deg=new_angle,
+        angle_error_deg=angle_error,
+        rotation_delta_deg=delta,
+        ecr=ecr,
+        fg_pixel_count=None,
+        search_score=search_score,
+    )
+
+
 # ---------------------------------------------------------------------------
-# ECR computation
+# ECR computation (shared)
 # ---------------------------------------------------------------------------
 
 def _compute_ecr(
@@ -181,42 +316,30 @@ def evaluate_rotation_edit(
     search_padding_deg: float = 20.0,
 ) -> RotationMeasurement:
     """
-    Evaluate a rotation edit by estimating the rotation angle of the output image.
+    Evaluate a rotation edit.
+
+    Automatically selects the measurement strategy:
+      - Image-moments on element crop  when source_bbox is present in metadata.
+      - Full-image NCC sweep           otherwise (fallback).
 
     Args:
         source_img:          RGB numpy array — the pre-edit source image.
-        output_img:          RGB numpy array — the model's output image.
+        output_img:          RGB numpy array — the model output (or ground-truth target).
         metadata:            Record metadata dict; must contain old_angle_deg and new_angle_deg.
-        coarse_step_deg:     Coarse sweep step size in degrees.
-        fine_step_deg:       Fine sweep step size in degrees.
-        search_padding_deg:  Extra search window padding beyond [old, new] range.
+                             If source_bbox is present, the moments path is used.
+        coarse_step_deg:     NCC path only — coarse sweep step size.
+        fine_step_deg:       NCC path only — fine sweep step size.
+        search_padding_deg:  NCC path only — search window padding beyond [old, new].
 
     Returns:
-        RotationMeasurement with measured_angle_deg, angle_error_deg, and ecr.
+        RotationMeasurement.  fg_pixel_count is set for moments path, search_score for NCC.
     """
     old_angle = float(metadata.get("old_angle_deg", 0.0))
     new_angle = float(metadata.get("new_angle_deg", 0.0))
-    delta = round(new_angle - old_angle, 4)
 
-    measured_angle, search_score = estimate_rotation_angle(
-        source_img=source_img,
-        output_img=output_img,
-        old_angle_deg=old_angle,
-        new_angle_deg=new_angle,
-        coarse_step_deg=coarse_step_deg,
-        fine_step_deg=fine_step_deg,
-        search_padding_deg=search_padding_deg,
-    )
+    if "source_bbox" in metadata:
+        return _evaluate_by_moments(source_img, output_img, old_angle, new_angle,
+                                    metadata["source_bbox"])
 
-    angle_error = round(abs(measured_angle - new_angle), 2)
-    ecr = _compute_ecr(measured_angle, new_angle, old_angle)
-
-    return RotationMeasurement(
-        measured_angle_deg=measured_angle,
-        source_angle_deg=old_angle,
-        target_angle_deg=new_angle,
-        angle_error_deg=angle_error,
-        rotation_delta_deg=delta,
-        ecr=ecr,
-        search_score=search_score,
-    )
+    return _evaluate_by_ncc(source_img, output_img, old_angle, new_angle,
+                             coarse_step_deg, fine_step_deg, search_padding_deg)

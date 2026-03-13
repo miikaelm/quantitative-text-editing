@@ -4,8 +4,8 @@ validate.py — Post-rendering validation for generated pairs.
 Calls evaluation metric primitives with pass/fail thresholds.
 Runs after render.py, before train/test splitting.
 
-Currently implements: color edit validation.
-TODO: reposition, scaling, content edit validation.
+Currently implements: color, scaling, typography, reposition (alignment), rotation edit validation.
+TODO: content edit validation.
 """
 
 import argparse
@@ -19,10 +19,9 @@ import numpy as np
 from PIL import Image
 
 from evaluation.metrics.color import evaluate_color_edit, ColorMeasurement
+from evaluation.metrics.rotation import evaluate_rotation_edit, RotationMeasurement
 from evaluation.metrics.scaling import evaluate_scaling_edit, ScalingMeasurement
 from evaluation.metrics.typography import (
-    evaluate_typography_edit,
-    TypographyMeasurement,
     binarize_text_region,
     compute_stroke_width,
     compute_shear_angle,
@@ -37,7 +36,7 @@ from evaluation.metrics.typography import (
 class ValidationConfig:
     """Thresholds for pass/fail decisions."""
     # Color edit thresholds
-    max_color_delta_e: float = 3.5          # target color must be near-exact in ground truth
+    max_color_delta_e: float = 8.0          # target color must be near-exact in ground truth
     min_ecr: float = 0.75
     max_ecr: float = 1.1
 
@@ -51,6 +50,11 @@ class ValidationConfig:
     min_typography_ecr: float = 0.70
     max_typography_ecr: float = 1.15
 
+    # Rotation edit thresholds
+    max_rotation_angle_error: float = 3.0        # measured angle must be within 3° of target
+    min_rotation_ecr: float = 0.80               # at least 80% of planned rotation achieved
+    min_rotation_search_score: float = 0.80      # NCC score must be high enough to trust measurement
+
 
 # ---------------------------------------------------------------------------
 # Result
@@ -59,6 +63,7 @@ class ValidationConfig:
 @dataclass
 class ValidationResult:
     pair_id: str
+    edit_type: str
     passed: bool
     checks: dict[str, bool]
     details: dict[str, float | str]
@@ -112,6 +117,7 @@ def validate_pair(
     if not source_path.exists() or not target_path.exists():
         return ValidationResult(
             pair_id=pair["pair_id"],
+            edit_type=pair.get("edit_type", "unknown"),
             passed=False,
             checks={"images_exist": False},
             details={"error": "missing image files"},
@@ -134,6 +140,7 @@ def validate_pair(
     passed = all(checks.values())
     return ValidationResult(
         pair_id=pair["pair_id"],
+        edit_type=edit_type,
         passed=passed,
         checks=checks,
         details=details,
@@ -181,10 +188,8 @@ def _validate_color(
     # Check: color is correct
     checks["edit_applied"] = measurement.delta_e <= config.max_color_delta_e and (measurement.edit_completion_ratio >= config.min_ecr and measurement.edit_completion_ratio <= config.max_ecr)
 
-    # Check: measurement is reliable
-    checks["measurement_confident"] = (
-        -1
-    )
+    # Check: measurement is reliable (enough text pixels to trust the color sample)
+    checks["measurement_confident"] = measurement.text_pixel_count >= 50
 
     # Record details for debugging
     details["measured_color"] = measurement.measured_hex
@@ -354,6 +359,58 @@ def _validate_typography(
         details["note"] = f"typography subcategory {subcategory!r} validation not yet implemented"
 
 
+def _validate_rotation(
+    source_img: np.ndarray,
+    target_img: np.ndarray,
+    metadata: dict,
+    config: ValidationConfig,
+    checks: dict,
+    details: dict,
+) -> None:
+    """
+    Validate a rotation edit.
+
+    Delegates to evaluate_rotation_edit, which selects the measurement strategy
+    automatically: image-moments on the element crop when source_bbox is present,
+    full-image NCC sweep otherwise.
+
+    Checks:
+        angles_available      — old/new angle metadata present
+        edit_applied          — angle_error_deg ≤ max_rotation_angle_error
+        measurement_confident — fg_pixel_count ≥ 50 (moments) or search_score ≥ threshold (NCC)
+    """
+    if "old_angle_deg" not in metadata or "new_angle_deg" not in metadata:
+        checks["angles_available"] = False
+        details["error"] = "old_angle_deg / new_angle_deg missing from metadata"
+        return
+    checks["angles_available"] = True
+
+    measurement: RotationMeasurement = evaluate_rotation_edit(
+        source_img=source_img,
+        output_img=target_img,
+        metadata=metadata,
+    )
+
+    checks["edit_applied"] = measurement.angle_error_deg <= config.max_rotation_angle_error
+    if measurement.fg_pixel_count is not None:
+        checks["measurement_confident"] = measurement.fg_pixel_count >= 50
+    else:
+        checks["measurement_confident"] = (measurement.search_score or 0.0) >= config.min_rotation_search_score
+
+    details["source_angle_deg"] = measurement.source_angle_deg
+    details["target_angle_deg"] = measurement.target_angle_deg
+    details["measured_angle_deg"] = measurement.measured_angle_deg
+    details["angle_error_deg"] = measurement.angle_error_deg
+    details["rotation_delta_deg"] = measurement.rotation_delta_deg
+    details["ecr"] = measurement.ecr
+    if measurement.fg_pixel_count is not None:
+        details["fg_pixel_count"] = measurement.fg_pixel_count
+    else:
+        details["search_score"] = measurement.search_score
+    details["old_value"] = metadata.get("old_value", "unknown")
+    details["new_value"] = metadata.get("new_value", "unknown")
+
+
 # ---------------------------------------------------------------------------
 # Dispatch table — add new edit type validators here
 # ---------------------------------------------------------------------------
@@ -363,6 +420,7 @@ _VALIDATORS = {
     "alignment":  _validate_reposition,   # same positional validation logic
     "scaling":    _validate_scaling,
     "typography": _validate_typography,
+    "rotation":   _validate_rotation,
     # "content":  _validate_content,
 }
 

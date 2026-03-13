@@ -182,6 +182,54 @@ def segment_text_pixels(
     return mask
 
 
+def segment_text_pixels_by_diff(
+    source_region: NDArray,
+    output_region: NDArray,
+    min_channel_sum_diff: int = 30,
+    core_fraction: float = 0.5,
+) -> NDArray:
+    """
+    Create a binary mask of text pixels using image difference.
+
+    When comparing a ground-truth source to a ground-truth target (pipeline
+    validation), only the edited text pixels should differ between the two
+    images.
+
+    Two-stage filtering:
+      1. Coarse: keep pixels with channel-sum diff >= ``min_channel_sum_diff``.
+      2. Core: among those, keep only pixels with diff >= ``core_fraction`` *
+         max_observed_diff.  This discards lightly-blended anti-aliased edge
+         pixels (which outnumber core text pixels for thin fonts) so the mode
+         is taken from the true text color rather than a blend with the
+         background.
+
+    Args:
+        source_region: H×W×3 uint8 source ROI.
+        output_region: H×W×3 uint8 output ROI (must be same shape).
+        min_channel_sum_diff: absolute floor — pixels below this are never text.
+        core_fraction: fraction of the maximum observed diff used as the
+            adaptive threshold.  0.5 keeps the top half of changed pixels.
+
+    Returns:
+        H×W boolean mask where True = changed (core text) pixel.
+    """
+    diff = np.abs(output_region.astype(np.int32) - source_region.astype(np.int32))
+    channel_sum = diff.sum(axis=2)  # H×W
+
+    base_mask = channel_sum >= min_channel_sum_diff
+    if base_mask.sum() < 20:
+        return base_mask
+
+    # Adaptive core threshold: focus on the most-changed pixels to avoid
+    # measuring anti-aliased blends at text edges.
+    max_diff = int(channel_sum.max())
+    if max_diff > 0:
+        core_threshold = max(min_channel_sum_diff, max_diff * core_fraction)
+        return channel_sum >= core_threshold
+
+    return base_mask
+
+
 # ---------------------------------------------------------------------------
 # High-level evaluation
 # ---------------------------------------------------------------------------
@@ -214,7 +262,7 @@ def evaluate_color_edit(
         source_image, output_image, bbox, search_margin
     )
 
-    # Step 2: Extract the matched region from output
+    # Step 2: Extract the matched region from output and the original region from source
     mx, my, mw, mh = matched_bbox
     img_h, img_w = output_image.shape[:2]
     rx0 = max(0, mx)
@@ -223,8 +271,27 @@ def evaluate_color_edit(
     ry1 = min(img_h, my + mh)
     output_region = output_image[ry0:ry1, rx0:rx1]
 
-    # Step 3: Segment text pixels using edges
-    text_mask = segment_text_pixels(output_region)
+    # Also extract the corresponding source region (at the original bbox position)
+    x, y, w, h = bbox
+    sx0 = max(0, x)
+    sy0 = max(0, y)
+    sx1 = min(img_w, x + w)
+    sy1 = min(img_h, y + h)
+    source_region = source_image[sy0:sy1, sx0:sx1]
+
+    # Step 3: Segment text pixels.
+    # Primary: diff-based mask — only pixels that changed between source and output
+    # are text pixels.  This is robust to complex/gradient backgrounds and works
+    # whenever source_image is available (pipeline validation).
+    # Fallback: Otsu thresholding (model-output evaluation with no source reference).
+    if source_region.shape == output_region.shape:
+        text_mask = segment_text_pixels_by_diff(source_region, output_region)
+        if int(text_mask.sum()) < 20:
+            # Diff yielded almost nothing — fall back to Otsu
+            text_mask = segment_text_pixels(output_region)
+    else:
+        text_mask = segment_text_pixels(output_region)
+
     text_pixel_count = int(text_mask.sum())
 
     # Step 4: Extract color from text pixels
